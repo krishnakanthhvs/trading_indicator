@@ -1,0 +1,1979 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// ©Krishna Kanth
+
+// @version=6
+indicator(title="Intraday Edge V2", shorttitle="IE v2.0", overlay=true, precision=4, max_lines_count=500, max_labels_count=500, max_boxes_count=50)
+
+import jdehorty/MLExtensions/2 as ml
+import jdehorty/KernelFunctions/2 as kernels
+
+// ======================
+// ==== Custom Types ====
+// ======================
+
+// This section uses PineScript's new Type syntax to define important data structures
+// used throughout the script.
+
+type MlSettings
+    float source
+    int neighborsCount
+    int maxBarsBack
+    int featureCount
+    int colorCompression
+    bool showExits
+    bool useDynamicExits
+
+type Label
+    int long
+    int short
+    int neutral
+
+type FeatureArrays
+    array<float> f1
+    array<float> f2
+    array<float> f3
+    array<float> f4
+    array<float> f5
+
+type FeatureSeries
+    float f1
+    float f2
+    float f3
+    float f4
+    float f5
+
+type MLModel
+    int firstBarIndex
+    array<int> trainingLabels
+    int loopSize
+    float lastDistance
+    array<float> distancesArray
+    array<int> predictionsArray
+    int prediction
+
+type FilterSettings 
+    bool useVolatilityFilter
+    bool useRegimeFilter
+    bool useAdxFilter
+    float regimeThreshold
+    int adxThreshold
+
+type Filter
+    bool volatility
+    bool regime
+    bool adx 
+
+// ==========================
+// ==== Helper Functions ====
+// ==========================
+
+series_from(feature_string, _close, _high, _low, _hlc3, f_paramA, f_paramB) =>
+    switch feature_string
+        "RSI" => ml.n_rsi(_close, f_paramA, f_paramB)
+        "WT" => ml.n_wt(_hlc3, f_paramA, f_paramB)
+        "CCI" => ml.n_cci(_close, f_paramA, f_paramB)
+        "ADX" => ml.n_adx(_high, _low, _close, f_paramA)
+
+get_lorentzian_distance(int i, int featureCount, FeatureSeries featureSeries, FeatureArrays featureArrays) =>
+    switch featureCount
+        5 => math.log(1+math.abs(featureSeries.f1 - array.get(featureArrays.f1, i))) + 
+             math.log(1+math.abs(featureSeries.f2 - array.get(featureArrays.f2, i))) + 
+             math.log(1+math.abs(featureSeries.f3 - array.get(featureArrays.f3, i))) + 
+             math.log(1+math.abs(featureSeries.f4 - array.get(featureArrays.f4, i))) + 
+             math.log(1+math.abs(featureSeries.f5 - array.get(featureArrays.f5, i)))
+        4 => math.log(1+math.abs(featureSeries.f1 - array.get(featureArrays.f1, i))) +
+             math.log(1+math.abs(featureSeries.f2 - array.get(featureArrays.f2, i))) +
+             math.log(1+math.abs(featureSeries.f3 - array.get(featureArrays.f3, i))) +
+             math.log(1+math.abs(featureSeries.f4 - array.get(featureArrays.f4, i)))
+        3 => math.log(1+math.abs(featureSeries.f1 - array.get(featureArrays.f1, i))) +
+             math.log(1+math.abs(featureSeries.f2 - array.get(featureArrays.f2, i))) +
+             math.log(1+math.abs(featureSeries.f3 - array.get(featureArrays.f3, i)))
+        2 => math.log(1+math.abs(featureSeries.f1 - array.get(featureArrays.f1, i))) +
+             math.log(1+math.abs(featureSeries.f2 - array.get(featureArrays.f2, i)))
+
+// ================  
+// ==== Inputs ==== 
+// ================ 
+
+// Settings Object: General User-Defined Inputs
+MlSettings mlSettings = 
+ MlSettings.new(
+   input.source(title='Source', defval=close, group="01 • ML — GENERAL", tooltip="Source of the input data"),
+   input.int(title='Neighbors Count', defval=8, group="01 • ML — GENERAL", minval=1, maxval=100, step=1, tooltip="Number of neighbors to consider"),
+   input.int(title="Max Bars Back", defval=2000, minval=250, maxval=5000, group="01 • ML — GENERAL", tooltip="Maximum recent bars used by the ML search. Higher values use more history but take longer to execute; 500–1000 is a practical range if TradingView reports a time-limit warning."),
+   input.int(title="Feature Count", defval=5, group="02 • ML — FEATURES", minval=2, maxval=5, tooltip="Number of features to use for ML predictions."),
+   input.int(title="Color Compression", defval=1, group="01 • ML — GENERAL", minval=1, maxval=10, tooltip="Compression factor for adjusting the intensity of the color scale."),
+   input.bool(title="Show Default Exits", defval=false, group="01 • ML — GENERAL", tooltip="Default exits occur exactly 4 bars after an entry signal. This corresponds to the predefined length of a trade during the model's training process.", inline="exits"),
+   input.bool(title="Use Dynamic Exits", defval=false, group="01 • ML — GENERAL", tooltip="Dynamic exits attempt to let profits ride by dynamically adjusting the exit threshold based on kernel regression logic.", inline="exits")
+ )
+   
+// Trade Stats Settings
+// Note: The trade stats section is NOT intended to be used as a replacement for proper backtesting. It is intended to be used for calibration purposes only.
+showTradeStats = input.bool(false, 'Show Trade Stats', tooltip='Displays the trade stats for a given configuration. Useful for optimizing the settings in the Feature Engineering section. This should NOT replace backtesting and should be used for calibration purposes only. Early Signal Flips represent instances where the model changes signals before 4 bars elapses; high values can indicate choppy (ranging) market conditions. Turn this off when you do not need the table; it avoids the additional statistics calculation.', group="01 • ML — GENERAL")
+useWorstCase = input.bool(false, "Use Worst Case Estimates", tooltip="Whether to use the worst case scenario for backtesting. This option can be useful for creating a conservative estimate that is based on close prices only, thus avoiding the effects of intrabar repainting. This option assumes that the user does not enter when the signal first appears and instead waits for the bar to close as confirmation. On larger timeframes, this can mean entering after a large move has already occurred. Leaving this option disabled is generally better for those that use this indicator as a source of confluence and prefer estimates that demonstrate discretionary mid-bar entries. Leaving this option enabled may be more consistent with traditional backtesting results.", group="01 • ML — GENERAL")
+
+// When enabled, this option allows the ML model to analyze the entire chart history for pattern recognition,
+// helping to identify rare but significant patterns across different market regimes that might not appear in recent data.
+includeFullHistory = input.bool(title="Include Full History", defval=false, group="01 • ML — GENERAL", tooltip="Extends back to the beginning of the chart's history to pick up rare historical patterns. This substantially increases calculation time on long charts; leave it off if TradingView shows a script time-limit warning.")
+
+// Settings object for user-defined settings
+FilterSettings filterSettings =
+ FilterSettings.new(
+   input.bool(title="Use Volatility Filter", defval=true, tooltip="Whether to use the volatility filter.", group="03 • ML — FILTERS"),
+   input.bool(title="Use Regime Filter", defval=true, group="03 • ML — FILTERS", inline="regime"),
+   input.bool(title="Use ADX Filter", defval=false, group="03 • ML — FILTERS", inline="adx"),
+   input.float(title="Threshold", defval=-0.1, minval=-10, maxval=10, step=0.1, tooltip="Whether to use the trend detection filter. Threshold for detecting Trending/Ranging markets.", group="03 • ML — FILTERS", inline="regime"),
+   input.int(title="Threshold", defval=20, minval=0, maxval=100, step=1, tooltip="Whether to use the ADX filter. Threshold for detecting Trending/Ranging markets.", group="03 • ML — FILTERS", inline="adx")
+ )
+
+// Filter object for filtering the ML predictions
+Filter filter =
+ Filter.new(
+   ml.filter_volatility(1, 10, filterSettings.useVolatilityFilter), 
+   ml.regime_filter(ohlc4, filterSettings.regimeThreshold, filterSettings.useRegimeFilter),
+   ml.filter_adx(mlSettings.source, 14, filterSettings.adxThreshold, filterSettings.useAdxFilter)
+  )
+
+// Feature Variables: User-Defined Inputs for calculating Feature Series. 
+f1_string = input.string(title="Feature 1", options=["RSI", "WT", "CCI", "ADX"], defval="RSI", inline = "01", tooltip="The first feature to use for ML predictions.", group="02 • ML — FEATURES")
+f1_paramA = input.int(title="Parameter A", tooltip="The primary parameter of feature 1.", defval=14, inline = "02", group="02 • ML — FEATURES")
+f1_paramB = input.int(title="Parameter B", tooltip="The secondary parameter of feature 2 (if applicable).", defval=1, inline = "02", group="02 • ML — FEATURES")
+f2_string = input.string(title="Feature 2", options=["RSI", "WT", "CCI", "ADX"], defval="WT", inline = "03", tooltip="The second feature to use for ML predictions.", group="02 • ML — FEATURES")
+f2_paramA = input.int(title="Parameter A", tooltip="The primary parameter of feature 2.", defval=10, inline = "04", group="02 • ML — FEATURES")
+f2_paramB = input.int(title="Parameter B", tooltip="The secondary parameter of feature 2 (if applicable).", defval=11, inline = "04", group="02 • ML — FEATURES")
+f3_string = input.string(title="Feature 3", options=["RSI", "WT", "CCI", "ADX"], defval="CCI", inline = "05", tooltip="The third feature to use for ML predictions.", group="02 • ML — FEATURES")
+f3_paramA = input.int(title="Parameter A", tooltip="The primary parameter of feature 3.", defval=20, inline = "06", group="02 • ML — FEATURES")
+f3_paramB = input.int(title="Parameter B", tooltip="The secondary parameter of feature 3 (if applicable).", defval=1, inline = "06", group="02 • ML — FEATURES")
+f4_string = input.string(title="Feature 4", options=["RSI", "WT", "CCI", "ADX"], defval="ADX", inline = "07", tooltip="The fourth feature to use for ML predictions.", group="02 • ML — FEATURES")
+f4_paramA = input.int(title="Parameter A", tooltip="The primary parameter of feature 4.", defval=20, inline = "08", group="02 • ML — FEATURES")
+f4_paramB = input.int(title="Parameter B", tooltip="The secondary parameter of feature 4 (if applicable).", defval=2, inline = "08", group="02 • ML — FEATURES")
+f5_string = input.string(title="Feature 5", options=["RSI", "WT", "CCI", "ADX"], defval="RSI", inline = "09", tooltip="The fifth feature to use for ML predictions.", group="02 • ML — FEATURES")
+f5_paramA = input.int(title="Parameter A", tooltip="The primary parameter of feature 5.", defval=9, inline = "10", group="02 • ML — FEATURES")
+f5_paramB = input.int(title="Parameter B", tooltip="The secondary parameter of feature 2 (if applicable).", defval=1, inline = "10", group="02 • ML — FEATURES")
+
+// FeatureSeries Object: Calculated Feature Series based on Feature Variables
+featureSeries = 
+ FeatureSeries.new(
+   series_from(f1_string, close, high, low, hlc3, f1_paramA, f1_paramB), // f1
+   series_from(f2_string, close, high, low, hlc3, f2_paramA, f2_paramB), // f2 
+   series_from(f3_string, close, high, low, hlc3, f3_paramA, f3_paramB), // f3
+   series_from(f4_string, close, high, low, hlc3, f4_paramA, f4_paramB), // f4
+   series_from(f5_string, close, high, low, hlc3, f5_paramA, f5_paramB)  // f5
+ )
+
+// FeatureArrays Variables: Storage of Feature Series as Feature Arrays Optimized for ML
+// Note: These arrays cannot be dynamically created within the FeatureArrays Object Initialization and thus must be set-up in advance.
+var f1Array = array.new_float()
+var f2Array = array.new_float()
+var f3Array = array.new_float()
+var f4Array = array.new_float()
+var f5Array = array.new_float()
+array.push(f1Array, featureSeries.f1)
+array.push(f2Array, featureSeries.f2)
+array.push(f3Array, featureSeries.f3)
+array.push(f4Array, featureSeries.f4)
+array.push(f5Array, featureSeries.f5)
+
+// FeatureArrays Object: Storage of the calculated FeatureArrays into a single object
+featureArrays = 
+ FeatureArrays.new(
+  f1Array, // f1
+  f2Array, // f2
+  f3Array, // f3
+  f4Array, // f4
+  f5Array  // f5
+ )
+
+// Label Object: Used for classifying historical data as training data for the ML Model
+Label direction = 
+ Label.new(
+   long=1, 
+   short=-1, 
+   neutral=0
+  )
+
+// Derived from General Settings
+maxBarsBackIndex = last_bar_index >= mlSettings.maxBarsBack ? last_bar_index - mlSettings.maxBarsBack : 0
+
+// EMA Settings 
+useEmaFilter = input.bool(title="Use EMA Filter", defval=false, group="03 • ML — FILTERS", inline="ema")
+emaPeriod = input.int(title="Period", defval=200, minval=1, step=1, group="03 • ML — FILTERS", inline="ema", tooltip="The period of the EMA used for the EMA Filter.")
+isEmaUptrend = useEmaFilter ? close > ta.ema(close, emaPeriod) : true
+isEmaDowntrend = useEmaFilter ? close < ta.ema(close, emaPeriod) : true
+useSmaFilter = input.bool(title="Use SMA Filter", defval=false, group="03 • ML — FILTERS", inline="sma")
+smaPeriod = input.int(title="Period", defval=200, minval=1, step=1, group="03 • ML — FILTERS", inline="sma", tooltip="The period of the SMA used for the SMA Filter.")
+isSmaUptrend = useSmaFilter ? close > ta.sma(close, smaPeriod) : true
+isSmaDowntrend = useSmaFilter ? close < ta.sma(close, smaPeriod) : true
+
+// Nadaraya-Watson Kernel Regression Settings
+useKernelFilter = input.bool(true, "Trade with Kernel", group="04 • ML — KERNEL", inline="kernel")
+showKernelEstimate = input.bool(true, "Show Kernel Estimate", group="04 • ML — KERNEL", inline="kernel")
+useKernelSmoothing = input.bool(false, "Enhance Kernel Smoothing", tooltip="Uses a crossover based mechanism to smoothen kernel color changes. This often results in less color transitions overall and may result in more ML entry signals being generated.", inline='1', group='04 • ML — KERNEL')
+h = input.int(8, 'Lookback Window', minval=3, tooltip='The number of bars used for the estimation. This is a sliding value that represents the most recent historical bars. Recommended range: 3-50', group="04 • ML — KERNEL", inline="kernel")
+r = input.float(8., 'Relative Weighting', step=0.25, tooltip='Relative weighting of time frames. As this value approaches zero, the longer time frames will exert more influence on the estimation. As this value approaches infinity, the behavior of the Rational Quadratic Kernel will become identical to the Gaussian kernel. Recommended range: 0.25-25', group="04 • ML — KERNEL", inline="kernel")
+x = input.int(25, "Regression Level", tooltip='Bar index on which to start regression. Controls how tightly fit the kernel estimate is to the data. Smaller values are a tighter fit. Larger values are a looser fit. Recommended range: 2-25', group="04 • ML — KERNEL", inline="kernel")
+lag = input.int(2, "Lag", tooltip="Lag for crossover detection. Lower values result in earlier crossovers. Recommended range: 1-2", inline='1', group='04 • ML — KERNEL')
+
+// Display Settings
+showBarColors = input.bool(false, "Show Bar Colors", tooltip="Optional visual colouring only. It does not change the ML signal.", group="05 • OPTIONAL — ML DISPLAY")
+useConfidenceGradient = input.bool(defval = true, title = "Use Confidence Gradient", tooltip = "When enabled, the colour intensity reflects the model's vote agreement. It does not represent a probability of profit.", group="05 • OPTIONAL — ML DISPLAY")
+barColorScheme = input.string("Default", "Bar Color Scheme", options=["Default", "Solid"], group="05 • OPTIONAL — ML DISPLAY", tooltip="Choose a subtle gradient or solid tint for the optional ML candle colours.")
+
+// =================================
+// ==== Next Bar Classification ====
+// =================================
+
+// This model specializes specifically in predicting the direction of price action over the course of the next 4 bars. 
+// To avoid complications with the ML model, this value is hardcoded to 4 bars but support for other training lengths may be added in the future.
+src = mlSettings.source
+y_train_series = src[4] < src[0] ? direction.short : src[4] > src[0] ? direction.long : direction.neutral
+var y_train_array = array.new_int(0)
+
+// Variables used for ML Logic
+var predictions = array.new_float(0)
+var prediction = 0.
+var signal = direction.neutral
+var distances = array.new_float(0)
+
+array.push(y_train_array, y_train_series)
+
+// =========================
+// ====  Core ML Logic  ====
+// =========================
+
+// Approximate Nearest Neighbors Search with Lorentzian Distance:
+// A novel variation of the Nearest Neighbors (NN) search algorithm that ensures a chronologically uniform distribution of neighbors.
+
+// In a traditional KNN-based approach, we would iterate through the entire dataset and calculate the distance between the current bar 
+// and every other bar in the dataset and then sort the distances in ascending order. We would then take the first k bars and use their 
+// labels to determine the label of the current bar. 
+
+// There are several problems with this traditional KNN approach in the context of real-time calculations involving time series data:
+// - It is computationally expensive to iterate through the entire dataset and calculate the distance between every historical bar and
+//   the current bar.
+// - Market time series data is often non-stationary, meaning that the statistical properties of the data change slightly over time.
+// - It is possible that the nearest neighbors are not the most informative ones, and the KNN algorithm may return poor results if the
+//   nearest neighbors are not representative of the majority of the data.
+
+// Previously, the user @capissimo attempted to address some of these issues in several of his PineScript-based KNN implementations by:
+// - Using a modified KNN algorithm based on consecutive furthest neighbors to find a set of approximate "nearest" neighbors.
+// - Using a sliding window approach to only calculate the distance between the current bar and the most recent n bars in the dataset.
+
+// Of these two approaches, the latter is inherently limited by the fact that it only considers the most recent bars in the overall dataset. 
+
+// The former approach has more potential to leverage historical price action, but is limited by:
+// - The possibility of a sudden "max" value throwing off the estimation
+// - The possibility of selecting a set of approximate neighbors that are not representative of the majority of the data by oversampling 
+//   values that are not chronologically distinct enough from one another
+// - The possibility of selecting too many "far" neighbors, which may result in a poor estimation of price action
+
+// To address these issues, a novel Approximate Nearest Neighbors (ANN) algorithm is used in this indicator.
+
+// In the below ANN algorithm:
+// 1. The algorithm iterates through the dataset in chronological order, using the modulo operator to only perform calculations every 4 bars.
+//    This serves the dual purpose of reducing the computational overhead of the algorithm and ensuring a minimum chronological spacing 
+//    between the neighbors of at least 4 bars.
+// 2. A list of the k-similar neighbors is simultaneously maintained in both a predictions array and corresponding distances array.
+// 3. When the size of the predictions array exceeds the desired number of nearest neighbors specified in settings.neighborsCount, 
+//    the algorithm removes the first neighbor from the predictions array and the corresponding distance array.
+// 4. The lastDistance variable is overriden to be a distance in the lower 25% of the array. This step helps to boost overall accuracy 
+//    by ensuring subsequent newly added distance values increase at a slower rate.
+// 5. Lorentzian distance is used as a distance metric in order to minimize the effect of outliers and take into account the warping of 
+//    "price-time" due to proximity to significant economic events.
+// 6. The includeFullHistory option determines the starting point for the algorithm's search:
+//    - When enabled, the algorithm searches through the entire available history (starting from index 0)
+//    - When disabled, the algorithm only searches through the most recent bars defined by maxBarsBack (starting from maxBarsBackIndex)
+//    This provides flexibility in balancing between computational efficiency and the breadth of historical patterns considered.
+
+lastDistance = -1.0
+// Keep the ML search inside its intended recent-history window. The previous
+// end index was capped at `maxBarsBack` as an absolute index; on a long chart
+// that made Pine walk backwards through thousands of unnecessary bars.
+int trainingEndIndex = array.size(y_train_array) - 1
+int trainingStartIndex = includeFullHistory ? 0 : maxBarsBackIndex
+
+if bar_index >= maxBarsBackIndex and trainingStartIndex <= trainingEndIndex //{
+    for i = trainingStartIndex to trainingEndIndex //{
+        d = get_lorentzian_distance(i, mlSettings.featureCount, featureSeries, featureArrays) 
+        if d >= lastDistance and i % 4 != 0 //{
+            lastDistance := d            
+            array.push(distances, d)
+            array.push(predictions, math.round(array.get(y_train_array, i)))
+            if array.size(predictions) > mlSettings.neighborsCount //{
+                lastDistance := array.get(distances, math.round(mlSettings.neighborsCount*3/4))
+                array.shift(distances)
+                array.shift(predictions)
+            //}
+        //}
+    //}
+    prediction := array.sum(predictions)
+//}
+
+// ============================
+// ==== Prediction Filters ====
+// ============================
+
+// User Defined Filters: Used for adjusting the frequency of the ML Model's predictions
+filter_all = filter.volatility and filter.regime and filter.adx
+
+// Filtered Signal: The model's prediction of future price movement direction with user-defined filters applied
+signal := bool(prediction > 0 and filter_all) ? direction.long : bool(prediction < 0 and filter_all) ? direction.short : nz(signal[1])
+
+// Bar-Count Filters: Represents strict filters based on a pre-defined holding period of 4 bars
+var int barsHeld = 0
+barsHeld := bool(ta.change(signal)) ? 0 : barsHeld + 1
+bool isHeldFourBars = barsHeld == 4
+bool isHeldLessThanFourBars = 0 < barsHeld and barsHeld < 4
+
+// Fractal Filters: Derived from relative appearances of signals in a given time series fractal/segment with a default length of 4 bars
+// Calculate signal changes first to avoid inconsistent calculations
+var float signalChange = 0.0
+var float signalChange1 = 0.0
+var float signalChange2 = 0.0
+var float signalChange3 = 0.0
+signalChange := ta.change(signal)
+signalChange1 := ta.change(signal[1])
+signalChange2 := ta.change(signal[2])
+signalChange3 := ta.change(signal[3])
+isDifferentSignalType = signalChange
+isEarlySignalFlip = bool(signalChange) and (bool(signalChange1) or bool(signalChange2) or bool(signalChange3))
+isBuySignal = signal == direction.long and bool(isEmaUptrend) and bool(isSmaUptrend)
+isSellSignal = signal == direction.short and bool(isEmaDowntrend) and bool(isSmaDowntrend)
+isLastSignalBuy = signal[4] == direction.long and bool(isEmaUptrend[4]) and bool(isSmaUptrend[4])
+isLastSignalSell = signal[4] == direction.short and bool(isEmaDowntrend[4]) and bool(isSmaDowntrend[4])
+isNewBuySignal = bool(isBuySignal) and bool(isDifferentSignalType)
+isNewSellSignal = bool(isSellSignal) and bool(isDifferentSignalType)
+
+// Kernel Regression Filters: Filters based on Nadaraya-Watson Kernel Regression using the Rational Quadratic Kernel
+// For more information on this technique refer to my other open source indicator located here: 
+// https://www.tradingview.com/script/AWNvbPRM-Nadaraya-Watson-Rational-Quadratic-Kernel-Non-Repainting/
+
+// Helper functions for color gradients
+// @function Assigns varying shades of the color green based on the KNN classification
+// @param prediction Value (int|float) of the prediction 
+// @returns color <color>
+color_green(float prediction) =>
+    // Scale the prediction to ensure proper color intensity based on the neighbors count
+    scaledPrediction = math.min(math.abs(prediction), 10)
+    
+    // If confidence gradient is disabled, use full intensity color
+    if not useConfidenceGradient
+        #009988    // Full intensity teal/green (color-blind safe)
+    else
+        // Use gradient based on prediction strength
+        switch
+            scaledPrediction >= 9 => #009988    // Full intensity teal/green (color-blind safe)
+            scaledPrediction >= 8 => color.new(#009988, 10)
+            scaledPrediction >= 7 => color.new(#009988, 20)
+            scaledPrediction >= 6 => color.new(#009988, 30)
+            scaledPrediction >= 5 => color.new(#009988, 40)
+            scaledPrediction >= 4 => color.new(#009988, 50)
+            scaledPrediction >= 3 => color.new(#009988, 60)
+            scaledPrediction >= 2 => color.new(#009988, 70)
+            scaledPrediction >= 1 => color.new(#009988, 80)
+            => color.new(#009988, 90)
+
+// @function Assigns varying shades of the color red based on the KNN classification
+// @param prediction Value of the prediction
+// @returns color
+color_red(float prediction) =>
+    // Scale the prediction to ensure proper color intensity based on the neighbors count
+    scaledPrediction = math.min(math.abs(prediction), 10)
+    
+    // If confidence gradient is disabled, use full intensity color
+    if not useConfidenceGradient
+        #CC3311    // Full intensity red (color-blind safe)
+    else
+        // Use gradient based on prediction strength
+        switch
+            scaledPrediction >= 9 => #CC3311    // Full intensity red (color-blind safe)
+            scaledPrediction >= 8 => color.new(#CC3311, 10)
+            scaledPrediction >= 7 => color.new(#CC3311, 20)
+            scaledPrediction >= 6 => color.new(#CC3311, 30)
+            scaledPrediction >= 5 => color.new(#CC3311, 40)
+            scaledPrediction >= 4 => color.new(#CC3311, 50)
+            scaledPrediction >= 3 => color.new(#CC3311, 60)
+            scaledPrediction >= 2 => color.new(#CC3311, 70)
+            scaledPrediction >= 1 => color.new(#CC3311, 80)
+            => color.new(#CC3311, 90)
+
+c_green = color.new(#009988, 20)  // Color-blind safe teal/green
+c_red = color.new(#CC3311, 20)    // Color-blind safe red
+transparent = color.new(#000000, 100)
+yhat1 = kernels.rationalQuadratic(mlSettings.source, h, r, x)
+yhat2 = kernels.gaussian(mlSettings.source, h-lag, x)
+kernelEstimate = yhat1
+// Kernel Rates of Change
+bool wasBearishRate = yhat1[2] > yhat1[1]
+bool wasBullishRate = yhat1[2] < yhat1[1]
+bool isBearishRate = yhat1[1] > yhat1
+bool isBullishRate = yhat1[1] < yhat1
+bool isBearishChange = isBearishRate and wasBullishRate
+bool isBullishChange = isBullishRate and wasBearishRate
+// Kernel Crossovers
+bool isBullishCrossAlert = ta.crossover(yhat2, yhat1)
+bool isBearishCrossAlert = ta.crossunder(yhat2, yhat1) 
+bool isBullishSmooth = yhat2 >= yhat1
+bool isBearishSmooth = yhat2 <= yhat1
+// Kernel Colors
+color colorByCross = isBullishSmooth ? c_green : c_red
+color colorByRate = isBullishRate ? c_green : c_red
+color plotColor = showKernelEstimate ? (useKernelSmoothing ? colorByCross : colorByRate) : transparent
+plot(kernelEstimate, color=plotColor, linewidth=2, title="Kernel Regression Estimate")
+// Alert Variables
+bool alertBullish = useKernelSmoothing ? isBullishCrossAlert : isBullishChange
+bool alertBearish = useKernelSmoothing ? isBearishCrossAlert : isBearishChange
+// Bullish and Bearish Filters based on Kernel
+bool isBullish = useKernelFilter ? (useKernelSmoothing ? isBullishSmooth : isBullishRate) : true
+bool isBearish = useKernelFilter ? (useKernelSmoothing ? isBearishSmooth : isBearishRate) : true
+
+// ===========================
+// ==== Entries and Exits ====
+// ===========================
+
+// Entry Conditions: Booleans for ML Model Position Entries
+bool startLongTrade = isNewBuySignal and isBullish and isEmaUptrend and isSmaUptrend
+bool startShortTrade = isNewSellSignal and isBearish and isEmaDowntrend and isSmaDowntrend
+
+// Dynamic Exit Conditions: Booleans for ML Model Position Exits based on Fractal Filters and Kernel Regression Filters
+bool lastSignalWasBullish = ta.barssince(startLongTrade) < ta.barssince(startShortTrade)
+bool lastSignalWasBearish = ta.barssince(startShortTrade) < ta.barssince(startLongTrade)
+int barsSinceRedEntry = ta.barssince(startShortTrade)
+int barsSinceRedExit = ta.barssince(alertBullish)
+int barsSinceGreenEntry = ta.barssince(startLongTrade)
+int barsSinceGreenExit = ta.barssince(alertBearish)
+bool isValidShortExit = barsSinceRedExit > barsSinceRedEntry
+bool isValidLongExit = barsSinceGreenExit > barsSinceGreenEntry
+bool endLongTradeDynamic = (isBearishChange and isValidLongExit[1])
+bool endShortTradeDynamic = (isBullishChange and isValidShortExit[1])
+
+// Fixed Exit Conditions: Booleans for ML Model Position Exits based on a Bar-Count Filters
+bool endLongTradeStrict = ((isHeldFourBars and isLastSignalBuy) or (isHeldLessThanFourBars and isNewSellSignal and isLastSignalBuy)) and startLongTrade[4]
+bool endShortTradeStrict = ((isHeldFourBars and isLastSignalSell) or (isHeldLessThanFourBars and isNewBuySignal and isLastSignalSell)) and startShortTrade[4]
+bool isDynamicExitValid = not useEmaFilter and not useSmaFilter and not useKernelSmoothing
+bool endLongTrade = mlSettings.useDynamicExits and isDynamicExitValid ? endLongTradeDynamic : endLongTradeStrict 
+bool endShortTrade = mlSettings.useDynamicExits and isDynamicExitValid ? endShortTradeDynamic : endShortTradeStrict
+
+// =========================
+// ==== Plotting Labels ====
+// =========================
+
+groupSignalLabels = "06 • SIGNAL LABELS"
+showSignalStrengthCodes = input.bool(true, "Show SB / B / BI and SS / S / SI", group = groupSignalLabels, tooltip = "Adds a confidence code to ML buy and sell markers. SB/SS = strong, B/S = standard, and BI/SI = low-confidence signals that you may choose to ignore.")
+showIgnoreSignalBadges = input.bool(true, "Show BI / SI (Low Confidence)", group = groupSignalLabels, tooltip = "Shows or hides the lightest ML signals. They remain visible in the model's calculations and alerts even when their chart badges are hidden.")
+signalTimingMode = input.string("30-Second Preview", "Signal Timing", options = ["30-Second Preview", "Confirmed Candle Close"], group = groupSignalLabels, tooltip = "30-Second Preview displays a live signal during the final 30 seconds of a time-based candle. It can disappear or change before the candle closes. Confirmed Candle Close waits for the final, non-repainting signal.")
+signalPreviewSeconds = input.int(30, "Preview Lead Time (Seconds)", minval = 5, maxval = 240, group = groupSignalLabels, active = signalTimingMode == "30-Second Preview", tooltip = "How long before the candle closes a live signal may appear. TradingView updates Pine only when fresh market data arrives, so it appears on the first price update inside this window—not on a guaranteed timer.")
+signalLabelGapATR = input.float(0.02, "Signal-to-Candle Gap (ATR)", minval = 0.0, maxval = 1.0, step = 0.01, group = groupSignalLabels, tooltip = "A very small gap between the signal badge and candle wick. The default is approximately 1–2 screen pixels on typical charts; use 0 to attach it directly to the wick.")
+showNextCandleEntryDot = input.bool(true, "Show Next-Candle Entry Dot", group = groupSignalLabels, tooltip = "Shows a small orange dot at the opening price of the candle immediately after an SB, B, BI, SS, S, or SI signal. This is the planned entry candle, not the signal candle.")
+entryDotColor = input.color(color.orange, "Entry Dot Color", group = groupSignalLabels, inline = "entryDot", tooltip = "Colour of the dot that marks the planned next-candle entry.")
+entryDotSizeInput = input.string("Small", "Entry Dot Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = groupSignalLabels, inline = "entryDot", tooltip = "Visual size of the next-candle entry dot.")
+maxSignalStrengthLabels = input.int(75, "Historical Signal Badges", minval = 25, maxval = 300, group = groupSignalLabels, tooltip = "Maximum number of strength-coded signal badges retained for hover inspection. Lower values keep long charts responsive and clean.")
+
+// The original marker shading reflects the absolute ML prediction. Turn that
+// continuous colour gradient into three readable confidence bands while
+// preserving its relative meaning when the Neighbors Count is changed.
+float mlSignalConfidence = mlSettings.neighborsCount > 0 ? math.abs(prediction) / mlSettings.neighborsCount : 0.0
+bool mlStrongSignal = mlSignalConfidence >= 0.80
+bool mlStandardSignal = not mlStrongSignal and mlSignalConfidence >= 0.45
+bool mlIgnoreSignal = not mlStrongSignal and not mlStandardSignal
+
+color mlBuyBadgeColor = mlStrongSignal ? #00796b : mlStandardSignal ? #009988 : color.new(#009988, 60)
+color mlSellBadgeColor = mlStrongSignal ? #8b1a1a : mlStandardSignal ? #CC3311 : color.new(#CC3311, 60)
+bool showMLBuyBadge = startLongTrade and (showIgnoreSignalBadges or not mlIgnoreSignal)
+bool showMLSellBadge = startShortTrade and (showIgnoreSignalBadges or not mlIgnoreSignal)
+float signalLabelGap = nz(ta.atr(14), high - low) * signalLabelGapATR
+
+var array<label> mlSignalLabels = array.new<label>()
+
+drawMLBuySignalLabel(string badgeText, string badgeTooltip, color badgeColor) =>
+    label newSignalLabel = label.new(
+         bar_index, low - signalLabelGap, badgeText,
+         xloc = xloc.bar_index, yloc = yloc.price,
+         color = badgeColor, style = label.style_label_up,
+         textcolor = color.white, size = size.small, tooltip = badgeTooltip
+     )
+    array.push(mlSignalLabels, newSignalLabel)
+    if array.size(mlSignalLabels) > maxSignalStrengthLabels
+        label.delete(array.shift(mlSignalLabels))
+
+drawMLSellSignalLabel(string badgeText, string badgeTooltip, color badgeColor) =>
+    label newSignalLabel = label.new(
+         bar_index, high + signalLabelGap, badgeText,
+         xloc = xloc.bar_index, yloc = yloc.price,
+         color = badgeColor, style = label.style_label_down,
+         textcolor = color.white, size = size.small, tooltip = badgeTooltip
+     )
+    array.push(mlSignalLabels, newSignalLabel)
+    if array.size(mlSignalLabels) > maxSignalStrengthLabels
+        label.delete(array.shift(mlSignalLabels))
+
+// Preview signals are available only in the final part of a realtime,
+// time-based candle. The confirmed-close option retains the original,
+// non-repainting behavior.
+bool isPreviewWindow = barstate.isrealtime and not barstate.isconfirmed and not na(time_close) and timenow >= time_close - signalPreviewSeconds * 1000 and timenow < time_close
+bool canDrawSignalBadge = barstate.isconfirmed or (signalTimingMode == "30-Second Preview" and isPreviewWindow)
+
+if showSignalStrengthCodes and showMLBuyBadge and canDrawSignalBadge
+    drawMLBuySignalLabel(mlStrongSignal ? "SB" : mlStandardSignal ? "B" : "BI", mlStrongSignal ? "SB - Strong Buy" : mlStandardSignal ? "B - Buy (50-50)" : "BI - Buy Ignore", mlBuyBadgeColor)
+
+if showSignalStrengthCodes and showMLSellBadge and canDrawSignalBadge
+    drawMLSellSignalLabel(mlStrongSignal ? "SS" : mlStandardSignal ? "S" : "SI", mlStrongSignal ? "SS - Strong Sell" : mlStandardSignal ? "S - Sell (50-50)" : "SI - Sell Ignore", mlSellBadgeColor)
+
+plotshape(not showSignalStrengthCodes and showMLBuyBadge ? low - signalLabelGap : na, title="ML Buy Marker", text="", style=shape.labelup, location=location.absolute, color=mlBuyBadgeColor, textcolor=color.white, size=size.small, offset=0)
+plotshape(not showSignalStrengthCodes and showMLSellBadge ? high + signalLabelGap : na, title="ML Sell Marker", text="", style=shape.labeldown, location=location.absolute, color=mlSellBadgeColor, textcolor=color.white, size=size.small, offset=0)
+bool isSignalEntryCandle = startLongTrade[1] or startShortTrade[1]
+bool showEntryDot = showNextCandleEntryDot and isSignalEntryCandle
+plotshape(showEntryDot and entryDotSizeInput == "Tiny" ? open : na, title="Next-Candle Entry • Tiny", text="", style=shape.circle, location=location.absolute, color=entryDotColor, size=size.tiny, offset=0)
+plotshape(showEntryDot and entryDotSizeInput == "Small" ? open : na, title="Next-Candle Entry • Small", text="", style=shape.circle, location=location.absolute, color=entryDotColor, size=size.small, offset=0)
+plotshape(showEntryDot and entryDotSizeInput == "Normal" ? open : na, title="Next-Candle Entry • Normal", text="", style=shape.circle, location=location.absolute, color=entryDotColor, size=size.normal, offset=0)
+plotshape(showEntryDot and entryDotSizeInput == "Large" ? open : na, title="Next-Candle Entry • Large", text="", style=shape.circle, location=location.absolute, color=entryDotColor, size=size.large, offset=0)
+plotshape(showEntryDot and entryDotSizeInput == "Huge" ? open : na, title="Next-Candle Entry • Huge", text="", style=shape.circle, location=location.absolute, color=entryDotColor, size=size.huge, offset=0)
+plotshape(endLongTrade and mlSettings.showExits ? high : na, 'StopBuy', shape.xcross, location.absolute, color=useConfidenceGradient ? c_green : #009988, size=size.tiny, offset=0)
+plotshape(endShortTrade and mlSettings.showExits ? low : na, 'StopSell', shape.xcross, location.absolute, color=useConfidenceGradient ? c_red : #CC3311, size=size.tiny, offset=0)
+
+// ================
+// ==== Alerts ====
+// ================ 
+
+// Separate Alerts for Entries and Exits
+alertcondition(startLongTrade, title='Open Long ▲', message='LDC Open Long ▲ | {{ticker}}@{{close}} | ({{interval}})')
+alertcondition(endLongTrade, title='Close Long ▲', message='LDC Close Long ▲ | {{ticker}}@{{close}} | ({{interval}})')
+alertcondition(startShortTrade, title='Open Short ▼', message='LDC Open Short  | {{ticker}}@{{close}} | ({{interval}})')
+alertcondition(endShortTrade, title='Close Short ▼', message='LDC Close Short ▼ | {{ticker}}@{{close}} | ({{interval}})')
+
+// Combined Alerts for Entries and Exits
+alertcondition(startShortTrade or startLongTrade, title='Open Position ▲▼', message='LDC Open Position ▲▼ | {{ticker}}@{{close}} | ({{interval}})')
+alertcondition(endShortTrade or endLongTrade, title='Close Position ▲▼', message='LDC Close Position  ▲▼ | {{ticker}}@[{{close}}] | ({{interval}})')
+
+// Kernel Estimate Alerts
+alertcondition(condition=alertBullish, title='Kernel Bullish Color Change', message='LDC Kernel Bullish ▲ | {{ticker}}@{{close}} | ({{interval}})')
+alertcondition(condition=alertBearish, title='Kernel Bearish Color Change', message='LDC Kernel Bearish ▼ | {{ticker}}@{{close}} | ({{interval}})')
+
+// =========================
+// ==== Display Signals ==== 
+// =========================
+
+c_neutral = color.new(#787b86, 25)  // Neutral gray color
+
+// Solid bar color palette: an opaque tint ramp (white blended toward full color) quantized
+// into 10 intensity steps. Matches the bar coloring of the MQL5 port.
+solid_color_index(float pred) =>
+    compression = math.max(float(mlSettings.neighborsCount) / float(mlSettings.colorCompression), 1.0)
+    int(math.min(math.round(math.abs(pred) / compression * 9.0), 9.0))
+
+solid_green_bar_color(float pred) =>
+    idx = solid_color_index(pred)
+    frac = (idx + 1) / 10.0
+    color.rgb(int(255 - frac * 255), int(255 - frac * (255 - 153)), int(255 - frac * (255 - 136)))
+
+solid_red_bar_color(float pred) =>
+    idx = solid_color_index(pred)
+    frac = (idx + 1) / 10.0
+    color.rgb(int(255 - frac * (255 - 204)), int(255 - frac * (255 - 51)), int(255 - frac * (255 - 17)))
+
+solid_bar_color(float pred) =>
+    pred > 0 ? solid_green_bar_color(pred) : pred < 0 ? solid_red_bar_color(pred) : #787B86
+
+// Use the helper functions for more granular color control
+c_pred = prediction > 0 ? color_green(prediction) : prediction < 0 ? color_red(-prediction) : c_neutral
+
+// Apply transparency to bar colors based on user preference
+c_bars = showBarColors ? (barColorScheme == "Solid" ? solid_bar_color(prediction) : (useConfidenceGradient ? color.new(c_pred, 50) : color.new(c_pred, 30))) : na
+barcolor(showBarColors ? c_bars : na)
+
+
+//====================================================================
+//====================== PIVOT SETTINGS ===============================
+//====================================================================
+
+string TT_DB = (
+    "When not selected, the indicator uses intraday data instead of EOD data on intraday charts. If the chart includes " +
+    "data from extended hours, the pivot level calculation takes that data into account. If intraday OHLC values " +
+    "differ from EOD values (normal for stocks), the calculated pivot levels will also differ."
+)
+DW = display.data_window
+string GRP00                    = "07 • PIVOT POINTS"
+bool showPivotPoints            = input.bool(true, "Show Pivot Points", group = GRP00, tooltip = "Shows or hides all Pivot Point lines and labels. Pivot Points are a visual reference and do not filter the ML signal in this clean version.")
+string pivotTypeInput           = input.string("Traditional", "Type", options = ["Traditional", "Fibonacci", "Woodie", "Classic", "DM", "Camarilla"], group = GRP00)
+string pivotAnchorInput         = input.string("Auto", "Pivots timeframe", options = ["Auto", "Daily", "Weekly", "Monthly", "Quarterly", "Yearly", "Biyearly", "Triyearly", "Quinquennially", "Decennially"], group = GRP00)
+int maxHistoricalPivotsInput    = input.int(1, "Number of pivots back", 1, 200, group = GRP00, display = DW)
+bool isDailyBasedInput          = input.bool(true, "Use daily-based values", tooltip = TT_DB, group = GRP00, display = DW)
+
+string GRP01                    = "07 • PIVOT POINTS — LABELS"
+bool showLabelsInput            = input.bool(true, "Show labels", group = GRP01, display = DW)
+bool showPricesInput            = input.bool(true, "Show prices", group = GRP01, display = DW)
+string positionLabelsInput      = input.string("Left", "Label Side", options = ["Left", "Right"], group = GRP01, display = DW, active = showLabelsInput or showPricesInput)
+
+color DEFAULT_COLOR      = #fb8c00
+color SUPPORT_COLOR      = color.red
+color RESISTANCE_COLOR   = color.green
+bool showLevel2and3 = pivotTypeInput != "DM"
+bool showLevel4     = pivotTypeInput != "DM" and pivotTypeInput != "Fibonacci"
+bool showLevel5     = pivotTypeInput == "Traditional" or pivotTypeInput == "Camarilla"
+
+string GRP02          = "07 • PIVOT POINTS — LEVELS"
+int linewidthInput    = input.int(1, "Line width", 1, 100, group = GRP02, display = DW)
+color pColorInput     = input.color(DEFAULT_COLOR, "P", inline = "10", group = GRP02, display = DW)
+bool pShowInput       = input.bool(true, "", inline = "10", group = GRP02, display = DW)
+color s1ColorInput    = input.color(SUPPORT_COLOR, "S1", inline = "02", group = GRP02, display = DW)
+bool s1ShowInput      = input.bool(true, "", inline = "02", group = GRP02, display = DW)
+color r1ColorInput    = input.color(RESISTANCE_COLOR, "R1", inline = "02", group = GRP02, display = DW)
+bool r1ShowInput      = input.bool(true, "", inline = "02", group = GRP02, display = DW)
+color s2ColorInput    = input.color(SUPPORT_COLOR, "S2", inline = "03", group = GRP02, display = DW, active = showLevel2and3)
+bool s2ShowInput      = input.bool(true, "", inline = "03", group = GRP02, display = DW, active = showLevel2and3)
+color r2ColorInput    = input.color(RESISTANCE_COLOR, "R2", inline = "03", group = GRP02, display = DW, active = showLevel2and3)
+bool r2ShowInput      = input.bool(true, "", inline = "03", group = GRP02, display = DW, active = showLevel2and3)
+color s3ColorInput    = input.color(SUPPORT_COLOR, "S3", inline = "04", group = GRP02, display = DW, active = showLevel2and3)
+bool s3ShowInput      = input.bool(true, "", inline = "04", group = GRP02, display = DW, active = showLevel2and3)
+color r3ColorInput    = input.color(RESISTANCE_COLOR, "R3", inline = "04", group = GRP02, display = DW, active = showLevel2and3)
+bool r3ShowInput      = input.bool(true, "", inline = "04", group = GRP02, display = DW, active = showLevel2and3)
+color s4ColorInput    = input.color(SUPPORT_COLOR, "S4", inline = "05", group = GRP02, display = DW, active = showLevel4)
+bool s4ShowInput      = input.bool(true, "", inline = "05", group = GRP02, display = DW, active = showLevel4)
+color r4ColorInput    = input.color(RESISTANCE_COLOR, "R4", inline = "05", group = GRP02, display = DW, active = showLevel4)
+bool r4ShowInput      = input.bool(true, "", inline = "05", group = GRP02, display = DW, active = showLevel4)
+color s5ColorInput    = input.color(SUPPORT_COLOR, "S5", inline = "06", group = GRP02, display = DW, active = showLevel5)
+bool s5ShowInput      = input.bool(true, "", inline = "06", group = GRP02, display = DW, active = showLevel5)
+color r5ColorInput    = input.color(RESISTANCE_COLOR, "R5", inline = "06", group = GRP02, display = DW, active = showLevel5)
+bool r5ShowInput      = input.bool(true, "", inline = "06", group = GRP02, display = DW, active = showLevel5)
+
+//====================================================================
+//====================== OPEN LEVEL SETTINGS ==========================
+//====================================================================
+
+groupOpen = "08 • OPEN LEVELS"
+
+showDailyOpen  = input.bool(true,  "Show Daily Open", group=groupOpen)
+showWeeklyOpen = input.bool(false, "Show Weekly Open", group=groupOpen)
+
+dailyOpenColor  = input.color(color.aqua,   "At Open Color", group=groupOpen)
+weeklyOpenColor = input.color(color.fuchsia,"Weekly Open Color", group=groupOpen)
+
+openBullThreshold = input.float(10.0, "Bullish Threshold (pts)", minval=0, group=groupOpen)
+openBearThreshold = input.float(10.0, "Bearish Threshold (pts)", minval=0, group=groupOpen)
+
+openBullColor = input.color(color.lime, "Bullish Color", group=groupOpen)
+openBearColor = input.color(color.red, "Bearish Color", group=groupOpen)
+openNeutralColor = input.color(color.gray, "Neutral Color", group=groupOpen)
+
+openLineWidth = input.int(2, "Line Width", minval=1, maxval=5, group=groupOpen)
+
+showOpenLabels = input.bool(true, "Show Labels", group=groupOpen)
+showOpenValues = input.bool(true, "Show Values", group=groupOpen)
+
+// The Auto profile identifies MCX Energy/Metals and crypto from the chart
+// symbol. Choose an explicit MCX agriculture profile when applicable.
+openPointSessionProfile = input.string(
+     "Auto",
+     "Open Point Session",
+     options=["Auto", "Indices / Equity (09:15-15:30)", "Commodities (09:00-23:30)", "Commodities Winter (09:00-23:55)", "MCX International Agri (09:00-21:00)", "MCX Domestic Agri (09:00-17:00)", "Crypto (24/7)", "Custom"],
+     group=groupOpen,
+     tooltip="Sets the market session used to establish Open Point and ORB values. Auto uses 09:00-23:30 for MCX Energy/Metals (including Crude Oil), 24 hours for crypto, and 09:15-15:30 for other symbols. MCX normally closes Energy/Metals at 23:30 during the US daylight-saving season and 23:55 during the winter season. Session-only levels disappear once this market session ends.")
+customOpenStartHour = input.int(9, "Start", minval=0, maxval=23, group=groupOpen, inline="customOpen", active=openPointSessionProfile == "Custom")
+customOpenStartMinute = input.int(15, ":", minval=0, maxval=59, group=groupOpen, inline="customOpen", active=openPointSessionProfile == "Custom")
+customOpenEndHour = input.int(15, "End", minval=0, maxval=23, group=groupOpen, inline="customClose", active=openPointSessionProfile == "Custom")
+customOpenEndMinute = input.int(30, ":", minval=0, maxval=59, group=groupOpen, inline="customClose", active=openPointSessionProfile == "Custom")
+
+//====================================================================
+//================== PIVOT LEVELS ==============================
+//====================================================================
+
+type graphicSettings
+    string levelName
+    color levelColor
+    bool showLevel
+
+type pivotGraphic
+    line pivotLine
+    label pivotLabel
+
+var array<graphicSettings> graphicSettingsArray = array.from(
+    graphicSettings.new(" P", pColorInput, pShowInput),
+    graphicSettings.new("R1", r1ColorInput, r1ShowInput), graphicSettings.new("S1", s1ColorInput, s1ShowInput),
+    graphicSettings.new("R2", r2ColorInput, r2ShowInput), graphicSettings.new("S2", s2ColorInput, s2ShowInput),
+    graphicSettings.new("R3", r3ColorInput, r3ShowInput), graphicSettings.new("S3", s3ColorInput, s3ShowInput),
+    graphicSettings.new("R4", r4ColorInput, r4ShowInput), graphicSettings.new("S4", s4ColorInput, s4ShowInput),
+    graphicSettings.new("R5", r5ColorInput, r5ShowInput), graphicSettings.new("S5", s5ColorInput, s5ShowInput)
+)
+
+var string autoAnchor = switch
+    timeframe.isintraday => timeframe.multiplier <= 15 ? isDailyBasedInput ? "1D" : "1440" : "1W"
+    timeframe.isdaily => "1M"
+    => "12M"
+
+var string pivotTimeframe = switch pivotAnchorInput
+    "Auto" => autoAnchor
+    "Daily" => isDailyBasedInput ? "1D" : "1440"
+    "Weekly" => "1W"
+    "Monthly" => "1M"
+    "Quarterly" => "3M"
+    => "12M"
+
+var int pivotYearMultiplier = switch pivotAnchorInput
+    "Biyearly" => 2
+    "Triyearly" => 3
+    "Quinquennially" => 5
+    "Decennially" => 10
+    => 1
+
+var matrix<pivotGraphic> drawnGraphics = matrix.new<pivotGraphic>()
+
+pivotTimeframeChangeCounter(bool condition) =>
+    var int count = 0
+    if condition and bar_index > 0
+        count += 1
+    count
+
+method delete(pivotGraphic graphic) =>
+    graphic.pivotLine.delete()
+    graphic.pivotLabel.delete()
+
+calculatePivots(simple bool isDailyBased) =>
+    if isDailyBased
+        bool pivotTimeframeChange = timeframe.change(timeframe.period) and year(time_tradingday, syminfo.timezone) % pivotYearMultiplier == 0
+        [pivotPointsArrayStatic, pivotPointsArrayDeveloping, pivotCounter] = request.security(
+            ticker.modify(syminfo.tickerid, settlement_as_close = settlement_as_close.on),
+            pivotTimeframe,
+            [
+                ta.pivot_point_levels(pivotTypeInput, pivotTimeframeChange),
+                ta.pivot_point_levels(pivotTypeInput, pivotTimeframeChange, developing = pivotTypeInput != "Woodie"),
+                pivotTimeframeChangeCounter(pivotTimeframeChange)
+            ],
+            lookahead = barmerge.lookahead_on
+        )
+    else
+        bool pivotTimeframeChange = timeframe.change(pivotTimeframe) and year(time_tradingday, syminfo.timezone) % pivotYearMultiplier == 0
+        array<float> pivotPointsArrayStatic = ta.pivot_point_levels(pivotTypeInput, pivotTimeframeChange)
+        array<float> pivotPointsArrayDeveloping = ta.pivot_point_levels(pivotTypeInput, pivotTimeframeChange, developing = pivotTypeInput != "Woodie")
+        int pivotCounter = pivotTimeframeChangeCounter(pivotTimeframeChange)
+        [pivotPointsArrayStatic, pivotPointsArrayDeveloping, pivotCounter]
+
+affixOldPivots(int endTime) =>
+    int rows = drawnGraphics.rows()
+    if rows > 0
+        array<pivotGraphic> lastGraphics = drawnGraphics.row(rows - 1)
+        for graphic in lastGraphics
+            graphic.pivotLine.set_x2(endTime)
+            if positionLabelsInput == "Right"
+                graphic.pivotLabel.set_x(endTime)
+
+drawNewPivots(int startTime, array<float> pivotPointsArray) =>
+    array<pivotGraphic> newGraphics = array.new<pivotGraphic>()
+    int endTime = startTime + timeframe.in_seconds(pivotTimeframe) * 1000 * pivotYearMultiplier
+    [labelPosition, labelStyle] = switch positionLabelsInput
+        "Left" => [startTime, label.style_label_right]
+        "Right" => [endTime, label.style_label_left]
+    for [index, level] in pivotPointsArray
+        graphicSettings levelSettings = graphicSettingsArray.get(index)
+        if showPivotPoints and not na(level) and levelSettings.showLevel
+            line pivotLine = line.new(startTime, level, endTime, level, xloc = xloc.bar_time, color = levelSettings.levelColor, width = linewidthInput)
+            label pivotLabel = label.new(
+                labelPosition,
+                level,
+                (showLabelsInput ? levelSettings.levelName + " " : "") + (showPricesInput ? "(" + str.tostring(level, format.mintick) + ")" : ""),
+                style = labelStyle,
+                textcolor = color.black,
+                color = levelSettings.levelColor,
+                size = size.small,
+                xloc = xloc.bar_time
+            )
+            newGraphics.push(pivotGraphic.new(pivotLine, pivotLabel))
+    if newGraphics.size() > 0
+        drawnGraphics.add_row(array_id = newGraphics)
+        if drawnGraphics.rows() > maxHistoricalPivotsInput
+            array<pivotGraphic> oldGraphics = drawnGraphics.remove_row(0)
+            for graphic in oldGraphics
+                graphic.delete()
+
+[pivotPointsArrayStatic, pivotPointsArrayDeveloping, pivotCount] = calculatePivots(isDailyBasedInput)
+float pivot = array.size(pivotPointsArrayStatic) > 0 ? array.get(pivotPointsArrayStatic, 0) : na
+
+var bool skipNextPivots = false
+if barstate.islast and barstate.isconfirmed and pivotTypeInput != "Woodie"
+    int nextBarOpenTime = time("", bars_back = -1)
+    int nextPivotStartTime = time(pivotTimeframe, timeframe_bars_back = -1)
+    if nextBarOpenTime >= nextPivotStartTime
+        affixOldPivots(nextPivotStartTime)
+        drawNewPivots(nextPivotStartTime, pivotPointsArrayDeveloping)
+        skipNextPivots := true
+if pivotCount != pivotCount[1]
+    if skipNextPivots
+        skipNextPivots := false
+    else
+        affixOldPivots(time)
+        drawNewPivots(time, pivotPointsArrayStatic)
+else if drawnGraphics.rows() > 0 and drawnGraphics.row(drawnGraphics.rows() - 1).last().pivotLine.get_x2() <= time[1]
+    affixOldPivots(time)
+
+var int firstBarTime = time
+if barstate.islastconfirmedhistory and drawnGraphics.rows() == 0
+    if pivotCount > 0 and not na(pivotPointsArrayStatic)
+        drawNewPivots(firstBarTime, pivotPointsArrayStatic)
+    else if timeframe.isintraday and not isDailyBasedInput
+        runtime.error("Not enough intraday data available for pivot point calculation. Select a lower timeframe from the options in the 'Pivots timeframe' input, or try selecting the 'Use daily-based values' checkbox to request EOD data.")
+    else
+        runtime.error("Not enough data available for pivot point calculation. Select a lower timeframe from the options in the 'Pivots timeframe' input.")
+
+var line dailyOpenLine = na
+var line weeklyOpenLine = na
+
+var label dailyOpenLbl = na
+var label weeklyOpenLbl = na
+
+//====================================================================
+//====================== OPEN PRICES =================================
+//====================================================================
+
+var float dailyOpen = na
+
+// Resolve the Open Point session from the selected profile. In Auto mode, MCX
+// Energy/Metal contracts (including Crude Oil) receive the 09:00-23:30
+// session used during the US daylight-saving season.
+string autoOpenPointSession = syminfo.type == "crypto" ? "Crypto (24/7)" : syminfo.prefix == "MCX" ? "Commodities (09:00-23:30)" : "Indices / Equity (09:15-15:30)"
+string activeOpenPointSession = openPointSessionProfile == "Auto" ? autoOpenPointSession : openPointSessionProfile
+
+bool isCryptoOpenPointSession = activeOpenPointSession == "Crypto (24/7)"
+bool isCommodityOpenPointSession = activeOpenPointSession == "Commodities (09:00-23:30)"
+bool isCommodityWinterSession = activeOpenPointSession == "Commodities Winter (09:00-23:55)"
+bool isMCXInternationalAgriSession = activeOpenPointSession == "MCX International Agri (09:00-21:00)"
+bool isMCXDomesticAgriSession = activeOpenPointSession == "MCX Domestic Agri (09:00-17:00)"
+bool isMCXSession = isCommodityOpenPointSession or isCommodityWinterSession or isMCXInternationalAgriSession or isMCXDomesticAgriSession
+bool isCustomOpenPointSession = activeOpenPointSession == "Custom"
+
+int openPointStartHour = isCryptoOpenPointSession ? 0 : isMCXSession ? 9 : isCustomOpenPointSession ? customOpenStartHour : 9
+int openPointStartMinute = isCryptoOpenPointSession or isMCXSession ? 0 : isCustomOpenPointSession ? customOpenStartMinute : 15
+int openPointEndHour = isCryptoOpenPointSession ? 0 : isCommodityOpenPointSession or isCommodityWinterSession ? 23 : isMCXInternationalAgriSession ? 21 : isMCXDomesticAgriSession ? 17 : isCustomOpenPointSession ? customOpenEndHour : 15
+int openPointEndMinute = isCryptoOpenPointSession ? 0 : isCommodityOpenPointSession ? 30 : isCommodityWinterSession ? 55 : isMCXInternationalAgriSession or isMCXDomesticAgriSession ? 0 : isCustomOpenPointSession ? customOpenEndMinute : 30
+bool openPointEndsNextDay = isCryptoOpenPointSession or (isCustomOpenPointSession and (openPointEndHour < openPointStartHour or (openPointEndHour == openPointStartHour and openPointEndMinute <= openPointStartMinute)))
+
+int sessionStart = timestamp(syminfo.timezone, year, month, dayofmonth, openPointStartHour, openPointStartMinute)
+int sessionEnd = timeframe.isintraday ? timestamp(syminfo.timezone, year, month, dayofmonth + (openPointEndsNextDay ? 1 : 0), openPointEndHour, openPointEndMinute) : time + 7 * 24 * 60 * 60 * 1000
+// Use the chart's next actual trading day rather than adding 24 hours. This
+// skips weekends and exchange holidays when rolling session-based drawings.
+int nextTradingDayTime = time("D", timeframe_bars_back = -1)
+int nextTradingSessionStart = not na(nextTradingDayTime) ? timestamp(syminfo.timezone, year(nextTradingDayTime, syminfo.timezone), month(nextTradingDayTime, syminfo.timezone), dayofmonth(nextTradingDayTime, syminfo.timezone), openPointStartHour, openPointStartMinute) : sessionStart + 24 * 60 * 60 * 1000
+int nextTradingSessionEnd = not na(nextTradingDayTime) ? timestamp(syminfo.timezone, year(nextTradingDayTime, syminfo.timezone), month(nextTradingDayTime, syminfo.timezone), dayofmonth(nextTradingDayTime, syminfo.timezone) + (openPointEndsNextDay ? 1 : 0), openPointEndHour, openPointEndMinute) : sessionEnd + 24 * 60 * 60 * 1000
+bool isInOpenPointSession = isCryptoOpenPointSession or (time >= sessionStart and time < sessionEnd)
+bool isNewOpenPointSession = isInOpenPointSession and (na(time[1]) or time[1] < sessionStart or time[1] >= sessionEnd)
+
+if isNewOpenPointSession
+    dailyOpen := open
+else
+    dailyOpen := nz(dailyOpen[1])
+
+// The Open Point is an immediate directional reference: green above it, red
+// below it, and the selected neutral colour only when price equals the open.
+dailyOpenLineColor =
+     close > dailyOpen ? openBullColor :
+     close < dailyOpen ? openBearColor :
+     dailyOpenColor
+
+weeklyOpen = request.security(
+     syminfo.tickerid,
+     "W",
+     open,
+     lookahead = barmerge.lookahead_on)
+
+weeklyOpenLineColor =
+     close >= weeklyOpen + openBullThreshold ? openBullColor :
+     close <= weeklyOpen - openBearThreshold ? openBearColor :
+     openNeutralColor
+
+//====================================================
+// Draw non-pivot session levels
+//====================================================
+
+bool newSession = isNewOpenPointSession
+// Crypto session levels are useful only on lower intraday timeframes. Hide
+// them from 30-minute and higher crypto charts while retaining them for all
+// intraday timeframes on the other market profiles.
+bool isCryptoBelowThirtyMinutes = timeframe.isseconds or (timeframe.isminutes and timeframe.multiplier < 30)
+bool showIntradaySessionLevels = timeframe.isintraday and (not isCryptoOpenPointSession or isCryptoBelowThirtyMinutes)
+// MCX Open Point is an intraday reference. On 30-minute and higher charts it
+// is more misleading than useful, so keep the ORB available but suppress Open
+// Point.
+bool isCommodityInstrument = syminfo.prefix == "MCX" or isMCXSession
+bool hideCommodityOpenPoint = isCommodityInstrument and timeframe.in_seconds() >= timeframe.in_seconds("30")
+// The daily Open Point is valid only during the selected cash/commodity
+// session. Unlike pivots and ORB, it must not remain after that market closes.
+// On a normal chart there is no bar after the final session candle. timenow
+// lets the last bar clear session-only levels once the actual market close has
+// passed, while extended-hours bars are covered by the time-range test.
+bool marketSessionClosed = not isCryptoOpenPointSession and (time >= sessionEnd or (barstate.islast and timenow >= sessionEnd))
+bool openPointSessionActive = isInOpenPointSession and not marketSessionClosed
+bool showDailyOpenForChart = showDailyOpen and not hideCommodityOpenPoint and openPointSessionActive
+int openPointEndTime = sessionEnd
+bool showSessionOnlyLevels = showIntradaySessionLevels and openPointSessionActive
+int sessionOnlyLevelEndTime = sessionEnd
+if newSession
+    line.delete(dailyOpenLine)
+    line.delete(weeklyOpenLine)
+    label.delete(dailyOpenLbl)
+    label.delete(weeklyOpenLbl)
+
+    if showIntradaySessionLevels and showDailyOpenForChart
+        dailyOpenLine := line.new(x1 = sessionStart, y1 = dailyOpen, x2 = openPointEndTime, y2 = dailyOpen, xloc = xloc.bar_time, color = dailyOpenColor, width = openLineWidth)
+    if showSessionOnlyLevels and showWeeklyOpen
+        weeklyOpenLine := line.new(x1 = sessionStart, y1 = weeklyOpen, x2 = sessionOnlyLevelEndTime, y2 = weeklyOpen, xloc = xloc.bar_time, color = weeklyOpenLineColor, width = openLineWidth)
+
+    if showIntradaySessionLevels and showOpenLabels
+        if showDailyOpenForChart
+            dailyOpenLbl := label.new(openPointEndTime, dailyOpen, showOpenValues ? "Open Point (" + str.tostring(dailyOpen, format.mintick) + ")" : "DO", xloc = xloc.bar_time, style = label.style_label_left, color = dailyOpenLineColor, textcolor = color.black, size = size.small)
+        if showSessionOnlyLevels and showWeeklyOpen
+            weeklyOpenLbl := label.new(sessionOnlyLevelEndTime, weeklyOpen, showOpenValues ? "Weekly OP (" + str.tostring(weeklyOpen, format.mintick) + ")" : "WO", xloc = xloc.bar_time, style = label.style_label_left, color = weeklyOpenLineColor, textcolor = color.white, size = size.small)
+
+// Keep Open Point colours current even when the user hides its labels.
+if showSessionOnlyLevels
+    if showDailyOpenForChart and not na(dailyOpenLine)
+        line.set_color(dailyOpenLine, dailyOpenLineColor)
+        line.set_x2(dailyOpenLine, openPointEndTime)
+    if showWeeklyOpen and not na(weeklyOpenLine)
+        line.set_x2(weeklyOpenLine, sessionOnlyLevelEndTime)
+
+if showSessionOnlyLevels and showOpenLabels
+    if showDailyOpenForChart and not na(dailyOpenLbl)
+        label.set_x(dailyOpenLbl, openPointEndTime)
+        label.set_text(dailyOpenLbl, showOpenValues ? "Open Point (" + str.tostring(dailyOpen, format.mintick) + ")" : "DO")
+        label.set_color(dailyOpenLbl, dailyOpenLineColor)
+    if showWeeklyOpen and not na(weeklyOpenLbl)
+        label.set_x(weeklyOpenLbl, sessionOnlyLevelEndTime)
+        label.set_text(weeklyOpenLbl, showOpenValues ? "Weekly OP (" + str.tostring(weeklyOpen, format.mintick) + ")" : "WO")
+        label.set_color(weeklyOpenLbl, weeklyOpenLineColor)
+
+// Extended-hours data can produce bars after the configured close. Remove all
+// session-only levels on those bars instead of leaving expired levels.
+if not showSessionOnlyLevels
+    line.delete(dailyOpenLine)
+    line.delete(weeklyOpenLine)
+    label.delete(dailyOpenLbl)
+    label.delete(weeklyOpenLbl)
+    dailyOpenLine := na
+    weeklyOpenLine := na
+    dailyOpenLbl := na
+    weeklyOpenLbl := na
+
+//====================================================================
+//====================== ORB LEVELS ==================================
+//====================================================================
+
+groupORB = "09 • ORB LEVELS"
+
+showORB = input.bool(true, "Enable ORB", group = groupORB)
+
+orbTF = input.string(
+     "5",
+     "Opening Range Duration",
+     options = ["1","3","5","10","15","30","60"],
+     group = groupORB,
+     tooltip = "Minutes included in the opening range. For an exact range, use a chart timeframe equal to or lower than this duration; a higher chart timeframe can only use that bar's full high and low.")
+
+orbSkipCandles = input.int(
+     0,
+     "Skip First N Candles",
+     minval = 0,
+     maxval = 20,
+     group = groupORB)
+
+extendORB = input.bool(true, "Extend Through Session", group = groupORB, tooltip = "Keeps ORB high, low, and middle lines through the selected market session. All ORB levels are removed when that session closes. Turn this off to end the lines at the latest bar.")
+
+showORBMid = input.bool(true, "Show Mid Line", group = groupORB)
+
+showORBLabels = input.bool(true, "Show Labels", group = groupORB)
+
+showORBValues = input.bool(true, "Show Values", group = groupORB)
+
+orbHighColor = input.color(color.green, "High Color", group=groupORB)
+orbLowColor  = input.color(color.red, "Low Color", group=groupORB)
+orbMidColor  = input.color(color.orange, "Mid Color", group=groupORB)
+
+orbWidth = input.int(2,"Line Width",1,5,group=groupORB)
+
+orbLineStyle = input.string(
+     "Dotted",
+     "Style",
+     options=["Solid","Dashed","Dotted"],
+     group=groupORB)
+
+
+//========================
+// ORB Objects
+//========================
+
+var line orbHighLine = na
+var line orbLowLine  = na
+var line orbMidLine  = na
+
+var label orbHighLbl = na
+var label orbLowLbl  = na
+var label orbMidLbl  = na
+
+orbStyle =(
+    orbLineStyle == "Dotted"  ? line.style_dotted :
+    orbLineStyle == "Dashed" ? line.style_dashed :
+                                line.style_solid
+)
+
+//====================================================================
+//====================== ORB CALCULATION ==============================
+//====================================================================
+
+var float orbHigh = na
+var float orbLow  = na
+var float orbMid  = na
+var int orbStartTime  = na
+
+var bool orbLocked = false
+
+// ORB must reset at the selected exchange-session opening rather than at the
+// calendar-day boundary. This keeps commodity contracts aligned to their
+// actual session, including a chart that begins after the nominal open.
+bool isInOrbSession = timeframe.isintraday and time >= sessionStart and time < sessionEnd
+bool newOrbSession = isInOrbSession and (na(time[1]) or time[1] < sessionStart or time[1] >= sessionEnd)
+
+if newOrbSession
+    line.delete(orbHighLine)
+    line.delete(orbLowLine)
+    line.delete(orbMidLine)
+    label.delete(orbHighLbl)
+    label.delete(orbLowLbl)
+    label.delete(orbMidLbl)
+    orbHighLine := na
+    orbLowLine := na
+    orbMidLine := na
+    orbHighLbl := na
+    orbLowLbl := na
+    orbMidLbl := na
+    orbLocked := false
+    orbHigh := na
+    orbLow := na
+    orbMid := na
+    orbStartTime := na
+
+int orbSkipMilliseconds = orbSkipCandles * timeframe.in_seconds() * 1000
+int orbCollectionStartTime = sessionStart + orbSkipMilliseconds
+int orbCollectionEndTime = orbCollectionStartTime + timeframe.in_seconds(orbTF) * 1000
+bool isCollectingORB = isInOrbSession and time >= orbCollectionStartTime and time < orbCollectionEndTime
+
+// Build the high/low across the selected opening-range duration, then lock it
+// once that window has ended. The prior code accepted an ORB timeframe input
+// but always used one chart bar; this makes the selected duration operative.
+if showIntradaySessionLevels and showORB and isCollectingORB and not orbLocked
+    orbHigh := na(orbHigh) ? high : math.max(orbHigh, high)
+    orbLow := na(orbLow) ? low : math.min(orbLow, low)
+    orbMid := (orbHigh + orbLow) / 2
+    orbStartTime := orbCollectionStartTime
+
+if showIntradaySessionLevels and showORB and isInOrbSession and not orbLocked and time >= orbCollectionEndTime and not na(orbHigh)
+    orbLocked := true
+
+int orbLevelEndTime = extendORB ? sessionEnd : time_close
+bool createLevels = showIntradaySessionLevels and showORB and orbLocked and na(orbHighLine)
+
+if createLevels
+    line.delete(orbHighLine)
+    line.delete(orbLowLine)
+    line.delete(orbMidLine)
+
+    label.delete(orbHighLbl)
+    label.delete(orbLowLbl)
+    label.delete(orbMidLbl)
+
+    if orbLocked
+
+        orbHighLine := line.new(x1=orbStartTime, y1=orbHigh, x2=orbLevelEndTime, y2=orbHigh, xloc=xloc.bar_time, color=orbHighColor, width=orbWidth, style=orbStyle)
+
+        orbLowLine := line.new(x1=orbStartTime, y1=orbLow, x2=orbLevelEndTime, y2=orbLow, xloc=xloc.bar_time, color=orbLowColor, width=orbWidth, style=orbStyle)
+
+    if showORBMid and orbLocked
+
+        orbMidLine := line.new(x1=orbStartTime, y1=orbMid, x2=orbLevelEndTime, y2=orbMid, xloc=xloc.bar_time, color=orbMidColor, width=orbWidth, style=orbStyle)
+
+    if showORBLabels and orbLocked
+
+        orbHighLbl := label.new(orbLevelEndTime, orbHigh, showORBValues ? "ORB High (" + str.tostring(orbHigh) + ")" : "ORB High", xloc=xloc.bar_time, style=label.style_label_left, color=orbHighColor, textcolor=color.white, size=size.small)
+
+        orbLowLbl := label.new(orbLevelEndTime, orbLow, showORBValues ? "ORB Low (" + str.tostring(orbLow) + ")" : "ORB Low", xloc=xloc.bar_time, style=label.style_label_left, color=orbLowColor, textcolor=color.white, size=size.small)
+
+    if showORBMid and orbLocked
+
+        orbMidLbl := label.new(orbLevelEndTime, orbMid, showORBValues ? "ORB Middle (" + str.tostring(orbMid) + ")" : "ORB Middle", xloc=xloc.bar_time, style=label.style_label_left, color=orbMidColor, textcolor=color.black, size=size.small)
+
+if showSessionOnlyLevels and showORB and orbLocked
+
+    if not na(orbHighLine)
+        line.set_x2(orbHighLine, orbLevelEndTime)
+    if not na(orbLowLine)
+        line.set_x2(orbLowLine, orbLevelEndTime)
+    if showORBMid and not na(orbMidLine)
+        line.set_x2(orbMidLine, orbLevelEndTime)
+
+    if showORBLabels
+
+        if not na(orbHighLbl)
+            label.set_x(orbHighLbl, orbLevelEndTime)
+            label.set_text(orbHighLbl, showORBValues ? "ORB High (" + str.tostring(orbHigh) + ")" : "ORB High")
+
+        if not na(orbLowLbl)
+            label.set_x(orbLowLbl, orbLevelEndTime)
+            label.set_text(orbLowLbl, showORBValues ? "ORB Low (" + str.tostring(orbLow) + ")" : "ORB Low")
+
+        if showORBMid and not na(orbMidLbl)
+            label.set_x(orbMidLbl, orbLevelEndTime)
+            label.set_text(orbMidLbl, showORBValues ? "ORB Middle (" + str.tostring(orbMid) + ")" : "ORB Middle")
+
+// ORB belongs only to the active market session. Remove it at the configured
+// close, just like the Open Point and Weekly Open.
+if not showSessionOnlyLevels
+    line.delete(dailyOpenLine)
+    line.delete(weeklyOpenLine)
+    line.delete(orbHighLine)
+    line.delete(orbLowLine)
+    line.delete(orbMidLine)
+
+    label.delete(dailyOpenLbl)
+    label.delete(weeklyOpenLbl)
+    label.delete(orbHighLbl)
+    label.delete(orbLowLbl)
+    label.delete(orbMidLbl)
+
+    dailyOpenLine := na
+    weeklyOpenLine := na
+    orbHighLine := na
+    orbLowLine := na
+    orbMidLine := na
+
+    dailyOpenLbl := na
+    weeklyOpenLbl := na
+    orbHighLbl := na
+    orbLowLbl := na
+    orbMidLbl := na
+    orbHigh := na
+    orbLow := na
+    orbMid := na
+    orbLocked := false
+
+//====================================================================
+//==================== LIQUIDITY SWEEP ================================
+//====================================================================
+
+groupLS = "10 • OPTIONAL • LIQUIDITY SWEEP"
+
+showLS = input.bool(false, "Enable Liquidity Sweep", group=groupLS, tooltip="Optional visual confirmation. Sweeps are confirmed only after the swing is known, so they appear later than the actual turning point.")
+
+lsSwing = input.int(
+     7,
+     "Confirmed Swing Length",
+     minval=3,
+     maxval=30,
+     group=groupLS)
+
+lsMinSweepATR = input.float(0.15, "Minimum Sweep Beyond Swing (ATR)", minval=0.05, step=0.05, group=groupLS)
+lsMinVolumeMultiplier = input.float(1.20, "Minimum Volume Multiplier", minval=0.50, step=0.05, group=groupLS)
+lsRejectionClosePercent = input.float(40.0, "Rejection Close Zone %", minval=10, maxval=50, step=5, group=groupLS, tooltip="A bearish sweep must close in the lower portion of its candle; a bullish sweep must close in the upper portion.")
+
+showBullLS = input.bool(true, "Bullish LS", group=groupLS)
+showBearLS = input.bool(true, "Bearish LS", group=groupLS)
+
+lsColor = input.color(color.orange, "Sweep Marker", group=groupLS)
+
+float ph = ta.pivothigh(high, lsSwing, lsSwing)
+float pl = ta.pivotlow(low, lsSwing, lsSwing)
+
+var float lastHigh = na
+var float lastLow = na
+var bool highLiquidityTaken = false
+var bool lowLiquidityTaken = false
+
+if not na(ph)
+    lastHigh := ph
+    highLiquidityTaken := false
+
+if not na(pl)
+    lastLow := pl
+    lowLiquidityTaken := false
+
+lsAtr = ta.atr(14)
+lsAverageVolume = ta.sma(volume, 20)
+lsCandleRange = high - low
+bearishLSRejection = close < open and lsCandleRange > 0 and close <= low + lsCandleRange * lsRejectionClosePercent / 100
+bullishLSRejection = close > open and lsCandleRange > 0 and close >= high - lsCandleRange * lsRejectionClosePercent / 100
+lsVolumeConfirmed = volume >= lsAverageVolume * lsMinVolumeMultiplier
+
+bearLS =
+     showLS and
+     showBearLS and
+     not na(lastHigh) and
+     not highLiquidityTaken and
+     high > lastHigh + lsAtr * lsMinSweepATR and
+     close < lastHigh and
+     bearishLSRejection and
+     lsVolumeConfirmed and
+     barstate.isconfirmed
+
+bullLS =
+     showLS and
+     showBullLS and
+     not na(lastLow) and
+     not lowLiquidityTaken and
+     low < lastLow - lsAtr * lsMinSweepATR and
+     close > lastLow and
+     bullishLSRejection and
+     lsVolumeConfirmed and
+     barstate.isconfirmed
+
+// A confirmed swing's liquidity can produce only one valid sweep signal.
+if bearLS
+    highLiquidityTaken := true
+
+if bullLS
+    lowLiquidityTaken := true
+
+plotshape(
+     bearLS,
+     title="Bearish LS",
+     text="LS",
+     style=shape.triangledown,
+     location=location.abovebar,
+     color=lsColor,
+     textcolor=color.blue,
+     size=size.tiny)
+
+plotshape(
+     bullLS,
+     title="Bullish LS",
+     text="LS",
+     style=shape.triangleup,
+     location=location.belowbar,
+     color=lsColor,
+     textcolor=color.green,
+     size=size.tiny)
+
+
+//====================================================================
+//=================== SMART MONEY CONCEPTS ===========================
+//====================================================================
+
+groupSMC = "11 • SMART MONEY CONCEPTS"
+
+structureLength = input.int(
+     10,
+     "Confirmed Swing Length",
+     minval = 5,
+     maxval = 30,
+     group = groupSMC,
+     tooltip = "BOS can occur only after a pivot high or low has been confirmed by this many candles on both sides.")
+
+breakoutATR = input.float(
+     0.30,
+     "Break Buffer (ATR)",
+     minval = 0.05,
+     step = 0.05,
+     group = groupSMC)
+
+smcDisplacementATR = input.float(
+     0.25,
+     "Minimum Candle Displacement (ATR)",
+     minval = 0.05,
+     step = 0.05,
+     group = groupSMC)
+
+smcVolumeMultiplier = input.float(
+     1.20,
+     "Minimum Volume Multiplier",
+     minval = 0.50,
+     step = 0.05,
+     group = groupSMC)
+
+smcBodyPercent = input.float(
+     55.0,
+     "Minimum Candle Body %",
+     minval = 20,
+     maxval = 90,
+     step = 5,
+     group = groupSMC,
+     tooltip = "Minimum body-to-range percentage for the displacement candle that confirms a structure break.")
+
+smcVolumeLength = input.int(
+     20,
+     "Volume Average Length",
+     minval = 1,
+     group = groupSMC)
+
+float smcAtr = ta.atr(14)
+float smcAverageVolume = ta.sma(volume, smcVolumeLength)
+float smcCandleRange = high - low
+float smcCandleBody = math.abs(close - open)
+bool smcBullishStrong = smcCandleRange > 0 and smcCandleBody >= smcCandleRange * smcBodyPercent / 100 and close > open
+bool smcBearishStrong = smcCandleRange > 0 and smcCandleBody >= smcCandleRange * smcBodyPercent / 100 and close < open
+
+showStructureLines = input.bool(
+     true,
+     "Show Structure Lines",
+     group = groupSMC,
+     tooltip = "Draws a horizontal line from the confirmed swing level to the candle that breaks it, instead of showing only a marker on the break candle.")
+
+showBOSLines = input.bool(
+     true,
+     "Show BOS",
+     group = groupSMC,
+     inline = "structureTypes",
+     tooltip = "Shows continuation Break of Structure lines.")
+
+showCHoCHLines = input.bool(
+     true,
+     "Show CHoCH",
+     group = groupSMC,
+     inline = "structureTypes",
+     tooltip = "Shows Change of Character lines when structure reverses.")
+
+showStructureLabels = input.bool(
+     true,
+     "Show Line Labels",
+     group = groupSMC,
+     tooltip = "Places BOS or CHoCH text in the middle of each structure line.")
+
+structureLineStyleInput = input.string(
+     "Dashed",
+     "Structure Line Style",
+     options = ["Solid", "Dashed", "Dotted"],
+     group = groupSMC,
+     tooltip = "Visual style used for BOS and CHoCH structure lines.")
+
+structureLineWidth = input.int(
+     1,
+     "Structure Line Width",
+     minval = 1,
+     maxval = 5,
+     group = groupSMC,
+     tooltip = "Thickness of BOS and CHoCH structure lines.")
+
+maxStructureBreaks = input.int(
+     25,
+     "Historical Structure Lines",
+     minval = 1,
+     maxval = 200,
+     group = groupSMC,
+     tooltip = "Maximum number of completed BOS and CHoCH lines retained on the chart.")
+
+bosBullColor = input.color(color.lime, "Bullish BOS", group = groupSMC, inline = "bosColors")
+bosBearColor = input.color(color.red, "Bearish BOS", group = groupSMC, inline = "bosColors")
+chochBullColor = input.color(color.aqua, "Bullish CHoCH", group = groupSMC, inline = "chochColors")
+chochBearColor = input.color(color.orange, "Bearish CHoCH", group = groupSMC, inline = "chochColors")
+
+groupSMCExtras = "12 • SMC — ZONES & LIQUIDITY"
+
+showEqualLevels = input.bool(true, "Show Equal Highs / Lows", group = groupSMCExtras, tooltip = "Marks two confirmed swing highs or lows that are close enough to form an equal-high (EQH) or equal-low (EQL) liquidity pool.")
+equalLevelToleranceATR = input.float(0.10, "Equal-Level Tolerance (ATR)", minval = 0.01, maxval = 1.00, step = 0.01, group = groupSMCExtras, tooltip = "How close two confirmed swing levels must be, measured in ATR, to qualify as equal highs or lows.")
+maxEqualLevels = input.int(10, "Historical Equal Levels", minval = 1, maxval = 100, group = groupSMCExtras, tooltip = "Maximum number of EQH and EQL annotations retained on the chart.")
+eqhColor = input.color(color.fuchsia, "Equal High", group = groupSMCExtras, inline = "equalColors")
+eqlColor = input.color(color.aqua, "Equal Low", group = groupSMCExtras, inline = "equalColors")
+
+showOrderBlocks = input.bool(true, "Show Order-Block Zones", group = groupSMCExtras, tooltip = "Draws a supply or demand zone from the most recent opposing candle before a confirmed BOS or CHoCH. These are simplified order blocks, not a guarantee of a reaction.")
+orderBlockTimeframeInput = input.string("Chart", "Order-Block Source Timeframe", options = ["Chart", "3 minutes", "5 minutes", "15 minutes", "1 hour", "4 hours", "1 day", "1 week", "1 month"], group = groupSMCExtras, tooltip = "Displays order blocks detected on this timeframe. For reliable results, select a timeframe equal to or higher than the chart timeframe.")
+maxOrderBlocks = input.int(8, "Historical Order Blocks", minval = 1, maxval = 40, group = groupSMCExtras, tooltip = "Maximum number of supply and demand zones retained on the chart.")
+showBullishOrderBlocks = input.bool(true, "Demand Zones", group = groupSMCExtras, inline = "orderBlockTypes")
+showBearishOrderBlocks = input.bool(true, "Supply Zones", group = groupSMCExtras, inline = "orderBlockTypes")
+bullishOrderBlockColor = input.color(color.teal, "Demand OB", group = groupSMCExtras, inline = "orderBlockColors")
+bearishOrderBlockColor = input.color(color.red, "Supply OB", group = groupSMCExtras, inline = "orderBlockColors")
+
+string orderBlockTimeframe = switch orderBlockTimeframeInput
+    "3 minutes" => "3"
+    "5 minutes" => "5"
+    "15 minutes" => "15"
+    "1 hour" => "60"
+    "4 hours" => "240"
+    "1 day" => "D"
+    "1 week" => "W"
+    "1 month" => "M"
+    => timeframe.period
+
+string orderBlockTimeframeLabel = switch orderBlockTimeframeInput
+    "3 minutes" => "3m"
+    "5 minutes" => "5m"
+    "15 minutes" => "15m"
+    "1 hour" => "1H"
+    "4 hours" => "4H"
+    "1 day" => "1D"
+    "1 week" => "1W"
+    "1 month" => "1M"
+    => "Chart"
+
+structureLineStyle = switch structureLineStyleInput
+    "Solid" => line.style_solid
+    "Dotted" => line.style_dotted
+    => line.style_dashed
+
+var array<line> structureLines = array.new<line>()
+var array<label> structureLabels = array.new<label>()
+var array<line> equalLevelLines = array.new<line>()
+var array<label> equalLevelLabels = array.new<label>()
+var array<box> orderBlockBoxes = array.new<box>()
+var array<int> orderBlockCreationBars = array.new<int>()
+
+drawStructureLine(int startBar, float level, string structureText, color structureColor) =>
+    int labelBar = startBar + int(math.round((bar_index - startBar) / 2.0))
+    line newStructureLine = line.new(startBar, level, bar_index, level, xloc = xloc.bar_index, color = structureColor, style = structureLineStyle, width = structureLineWidth)
+    label newStructureLabel = label.new(labelBar, level, showStructureLabels ? structureText : "", xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, textcolor = structureColor, size = size.tiny)
+    array.push(structureLines, newStructureLine)
+    array.push(structureLabels, newStructureLabel)
+    if array.size(structureLines) > maxStructureBreaks
+        line.delete(array.shift(structureLines))
+        label.delete(array.shift(structureLabels))
+
+drawEqualLevel(int startBar, int endBar, float level, string levelText, color levelColor) =>
+    line newEqualLevelLine = line.new(startBar, level, endBar, level, xloc = xloc.bar_index, color = levelColor, style = line.style_dotted, width = 1)
+    label newEqualLevelLabel = label.new(endBar, level, levelText, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, textcolor = levelColor, size = size.tiny)
+    array.push(equalLevelLines, newEqualLevelLine)
+    array.push(equalLevelLabels, newEqualLevelLabel)
+    if array.size(equalLevelLines) > maxEqualLevels
+        line.delete(array.shift(equalLevelLines))
+        label.delete(array.shift(equalLevelLabels))
+
+drawOrderBlock(int startTime, float zoneHigh, float zoneLow, color zoneColor, string zoneLabel) =>
+    box newOrderBlock = box.new(left = startTime, top = zoneHigh, right = time, bottom = zoneLow, xloc = xloc.bar_time, extend = extend.right, border_color = zoneColor, bgcolor = color.new(zoneColor, 86), text = zoneLabel, text_color = zoneColor, text_halign = text.align_left, text_valign = text.align_top, text_size = size.tiny)
+    array.push(orderBlockBoxes, newOrderBlock)
+    array.push(orderBlockCreationBars, bar_index)
+    if array.size(orderBlockBoxes) > maxOrderBlocks
+        box.delete(array.shift(orderBlockBoxes))
+        array.shift(orderBlockCreationBars)
+
+removeMitigatedOrderBlocks() =>
+    if array.size(orderBlockBoxes) > 0
+        for index = array.size(orderBlockBoxes) - 1 to 0
+            box activeOrderBlock = array.get(orderBlockBoxes, index)
+            int creationBar = array.get(orderBlockCreationBars, index)
+            bool zoneTouched = bar_index > creationBar and low <= box.get_top(activeOrderBlock) and high >= box.get_bottom(activeOrderBlock)
+            if zoneTouched
+                box.delete(activeOrderBlock)
+                array.remove(orderBlockBoxes, index)
+                array.remove(orderBlockCreationBars, index)
+
+getOrderBlockData() =>
+    float localAtr = ta.atr(14)
+    float localAverageVolume = ta.sma(volume, smcVolumeLength)
+    float localPivotHigh = ta.pivothigh(high, structureLength, structureLength)
+    float localPivotLow = ta.pivotlow(low, structureLength, structureLength)
+    var float localPreviousHigh = na
+    var float localPreviousLow = na
+    var bool localHighBroken = false
+    var bool localLowBroken = false
+    var float localLastBearishHigh = na
+    var float localLastBearishLow = na
+    var int localLastBearishTime = na
+    var float localLastBullishHigh = na
+    var float localLastBullishLow = na
+    var int localLastBullishTime = na
+
+    if not na(localPivotHigh)
+        localPreviousHigh := localPivotHigh
+        localHighBroken := false
+    if not na(localPivotLow)
+        localPreviousLow := localPivotLow
+        localLowBroken := false
+    if close < open
+        localLastBearishHigh := high
+        localLastBearishLow := low
+        localLastBearishTime := time
+    if close > open
+        localLastBullishHigh := high
+        localLastBullishLow := low
+        localLastBullishTime := time
+
+    float localRange = high - low
+    float localBody = math.abs(close - open)
+    bool localBullishStrong = localRange > 0 and localBody >= localRange * smcBodyPercent / 100 and close > open
+    bool localBearishStrong = localRange > 0 and localBody >= localRange * smcBodyPercent / 100 and close < open
+    bool localVolumeConfirmed = volume >= localAverageVolume * smcVolumeMultiplier
+    // request.security() supplies completed higher-timeframe bars with the
+    // lookahead setting below, so do not use barstate.isconfirmed here.
+    bool localBullishBreak = not na(localPreviousHigh) and not localHighBroken and close > localPreviousHigh + localAtr * breakoutATR and localBullishStrong and close - open >= localAtr * smcDisplacementATR and localVolumeConfirmed
+    bool localBearishBreak = not na(localPreviousLow) and not localLowBroken and close < localPreviousLow - localAtr * breakoutATR and localBearishStrong and open - close >= localAtr * smcDisplacementATR and localVolumeConfirmed
+    if localBullishBreak
+        localHighBroken := true
+    if localBearishBreak
+        localLowBroken := true
+
+    [localBullishBreak, localBearishBreak, localLastBearishHigh, localLastBearishLow, localLastBearishTime, localLastBullishHigh, localLastBullishLow, localLastBullishTime]
+
+[selectedTFBullishOrderBlock, selectedTFBearishOrderBlock, selectedTFBullishZoneHigh, selectedTFBullishZoneLow, selectedTFBullishZoneTime, selectedTFBearishZoneHigh, selectedTFBearishZoneLow, selectedTFBearishZoneTime] = request.security(syminfo.tickerid, orderBlockTimeframe, getOrderBlockData(), gaps = barmerge.gaps_on, lookahead = barmerge.lookahead_off)
+
+// Confirmed pivot levels replace the rolling-high/low calculation. Each level
+// is marked as consumed once it produces a structure break, preventing a BOS
+// label on every successive new high or low.
+float confirmedStructureHigh = ta.pivothigh(high, structureLength, structureLength)
+float confirmedStructureLow = ta.pivotlow(low, structureLength, structureLength)
+
+var float previousHigh = na
+var float previousLow = na
+var int previousHighBar = na
+var int previousLowBar = na
+var float equalHighReference = na
+var float equalLowReference = na
+var int equalHighReferenceBar = na
+var int equalLowReferenceBar = na
+var bool structureHighBroken = false
+var bool structureLowBroken = false
+var float lastBearishOrderBlockHigh = na
+var float lastBearishOrderBlockLow = na
+var int lastBearishOrderBlockTime = na
+var float lastBullishOrderBlockHigh = na
+var float lastBullishOrderBlockLow = na
+var int lastBullishOrderBlockTime = na
+
+if not na(confirmedStructureHigh)
+    int confirmedHighBar = bar_index - structureLength
+    float equalLevelTolerance = nz(smcAtr[structureLength], smcAtr) * equalLevelToleranceATR
+    if showEqualLevels and not na(equalHighReference) and math.abs(confirmedStructureHigh - equalHighReference) <= equalLevelTolerance
+        drawEqualLevel(equalHighReferenceBar, confirmedHighBar, (confirmedStructureHigh + equalHighReference) / 2.0, "EQH", eqhColor)
+    equalHighReference := confirmedStructureHigh
+    equalHighReferenceBar := confirmedHighBar
+    previousHigh := confirmedStructureHigh
+    previousHighBar := confirmedHighBar
+    structureHighBroken := false
+
+if not na(confirmedStructureLow)
+    int confirmedLowBar = bar_index - structureLength
+    float equalLevelTolerance = nz(smcAtr[structureLength], smcAtr) * equalLevelToleranceATR
+    if showEqualLevels and not na(equalLowReference) and math.abs(confirmedStructureLow - equalLowReference) <= equalLevelTolerance
+        drawEqualLevel(equalLowReferenceBar, confirmedLowBar, (confirmedStructureLow + equalLowReference) / 2.0, "EQL", eqlColor)
+    equalLowReference := confirmedStructureLow
+    equalLowReferenceBar := confirmedLowBar
+    previousLow := confirmedStructureLow
+    previousLowBar := confirmedLowBar
+    structureLowBroken := false
+
+// A bullish break uses the latest bearish candle as a potential demand zone;
+// a bearish break uses the latest bullish candle as a potential supply zone.
+if close < open
+    lastBearishOrderBlockHigh := high
+    lastBearishOrderBlockLow := low
+    lastBearishOrderBlockTime := time
+
+if close > open
+    lastBullishOrderBlockHigh := high
+    lastBullishOrderBlockLow := low
+    lastBullishOrderBlockTime := time
+
+breakBuffer = smcAtr * breakoutATR
+buyStructure = not na(previousHigh) and not structureHighBroken and close > previousHigh + breakBuffer
+sellStructure = not na(previousLow) and not structureLowBroken and close < previousLow - breakBuffer
+
+bullishDisplacement = close - open >= smcAtr * smcDisplacementATR
+bearishDisplacement = open - close >= smcAtr * smcDisplacementATR
+smcVolumeConfirmed = volume >= smcAverageVolume * smcVolumeMultiplier
+
+//====================================================
+// BREAK OF STRUCTURE
+//====================================================
+
+bullishStructureBreak =
+     buyStructure and
+     smcBullishStrong and
+     bullishDisplacement and
+     smcVolumeConfirmed and
+     barstate.isconfirmed
+
+bearishStructureBreak =
+     sellStructure and
+     smcBearishStrong and
+     bearishDisplacement and
+     smcVolumeConfirmed and
+     barstate.isconfirmed
+
+//====================================================
+// CHANGE OF CHARACTER
+//====================================================
+
+var string marketStructure = "NONE"
+
+bool chochBull = bullishStructureBreak and marketStructure == "BEAR"
+bool chochBear = bearishStructureBreak and marketStructure == "BULL"
+
+// A continuation is BOS. A valid break against the prior structure is CHoCH,
+// so the same event is never labelled as both.
+bullishBOS = bullishStructureBreak and not chochBull
+bearishBOS = bearishStructureBreak and not chochBear
+
+if bearishStructureBreak
+    structureLowBroken := true
+    marketStructure := "BEAR"
+
+if bullishStructureBreak
+    structureHighBroken := true
+    marketStructure := "BULL"
+
+if showStructureLines
+    if bullishBOS and showBOSLines
+        drawStructureLine(previousHighBar, previousHigh, "BOS", bosBullColor)
+    if bearishBOS and showBOSLines
+        drawStructureLine(previousLowBar, previousLow, "BOS", bosBearColor)
+    if chochBull and showCHoCHLines
+        drawStructureLine(previousHighBar, previousHigh, "CHoCH", chochBullColor)
+    if chochBear and showCHoCHLines
+        drawStructureLine(previousLowBar, previousLow, "CHoCH", chochBearColor)
+
+if showOrderBlocks
+    // Active order blocks stay extended into later sessions and disappear as
+    // soon as price trades back into their range (mitigation/completion).
+    removeMitigatedOrderBlocks()
+    if orderBlockTimeframeInput == "Chart"
+        if bullishStructureBreak and showBullishOrderBlocks and not na(lastBearishOrderBlockTime)
+            drawOrderBlock(lastBearishOrderBlockTime, lastBearishOrderBlockHigh, lastBearishOrderBlockLow, bullishOrderBlockColor, "Demand OB • " + orderBlockTimeframeLabel)
+        if bearishStructureBreak and showBearishOrderBlocks and not na(lastBullishOrderBlockTime)
+            drawOrderBlock(lastBullishOrderBlockTime, lastBullishOrderBlockHigh, lastBullishOrderBlockLow, bearishOrderBlockColor, "Supply OB • " + orderBlockTimeframeLabel)
+    else
+        if selectedTFBullishOrderBlock and showBullishOrderBlocks and not na(selectedTFBullishZoneTime)
+            drawOrderBlock(selectedTFBullishZoneTime, selectedTFBullishZoneHigh, selectedTFBullishZoneLow, bullishOrderBlockColor, "Demand OB • " + orderBlockTimeframeLabel)
+        if selectedTFBearishOrderBlock and showBearishOrderBlocks and not na(selectedTFBearishZoneTime)
+            drawOrderBlock(selectedTFBearishZoneTime, selectedTFBearishZoneHigh, selectedTFBearishZoneLow, bearishOrderBlockColor, "Supply OB • " + orderBlockTimeframeLabel)
+
+//====================================================================
+//==================== CANDLE PATTERN LETTERS ========================
+//====================================================================
+
+groupCandlePatterns = "13 • OPTIONAL • PRICE ACTION — CANDLE PATTERNS"
+
+showCandlePatterns = input.bool(false, "Show Candle Pattern Letters", group = groupCandlePatterns, tooltip = "Optional educational labels. They do not change the ML signal or trade plan. Hover a letter to see the full pattern name.")
+showEngulfingPatterns = input.bool(true, "Engulfing", group = groupCandlePatterns, inline = "candleTypes", tooltip = "E = Bullish or Bearish Engulfing. The current body fully covers the previous candle's body.")
+showDarkCloudPattern = input.bool(true, "Dark Cloud Cover", group = groupCandlePatterns, inline = "candleTypes", tooltip = "C = Dark Cloud Cover, a bearish two-candle reversal pattern.")
+showInvertedHammerPattern = input.bool(true, "Inverted Hammer", group = groupCandlePatterns, inline = "candleTypes2", tooltip = "I = Inverted Hammer after price is below the slow EMA.")
+showShootingStarPattern = input.bool(true, "Shooting Star", group = groupCandlePatterns, inline = "candleTypes2", tooltip = "S = Shooting Star after price is above the slow EMA.")
+showMarubozuPattern = input.bool(true, "Marubozu", group = groupCandlePatterns, inline = "candleTypes2", tooltip = "M = a strong-bodied candle with very small wicks.")
+longWickToBody = input.float(2.0, "Long Wick / Body", minval = 1.0, maxval = 10.0, step = 0.25, group = groupCandlePatterns, tooltip = "Minimum upper-wick-to-body ratio for Inverted Hammer and Shooting Star patterns.")
+marubozuBodyPercent = input.float(90.0, "Marubozu Body %", minval = 70.0, maxval = 100.0, step = 1.0, group = groupCandlePatterns, tooltip = "Minimum percentage of a candle's range that must be body to qualify as a Marubozu.")
+candlePatternOffsetATR = input.float(0.10, "Letter Offset (ATR)", minval = 0.01, maxval = 1.00, step = 0.01, group = groupCandlePatterns, tooltip = "Distance of the pattern letter above or below its candle, measured in ATR.")
+maxCandlePatternLabels = input.int(50, "Historical Pattern Letters", minval = 10, maxval = 200, group = groupCandlePatterns, tooltip = "Maximum number of candle-pattern letters kept on the chart.")
+
+var array<label> candlePatternLabels = array.new<label>()
+float candlePatternAtr = ta.atr(14)
+float candlePatternTrendEma = ta.ema(close, 21)
+
+drawCandlePattern(bool bullishPattern, string patternLetter, string patternName) =>
+    float labelOffset = nz(candlePatternAtr, high - low) * candlePatternOffsetATR
+    float labelPrice = bullishPattern ? low - labelOffset : high + labelOffset
+    color patternColor = bullishPattern ? color.lime : color.red
+    label newPatternLabel = label.new(bar_index, labelPrice, patternLetter, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, color = color.new(color.white, 100), textcolor = patternColor, size = size.small, tooltip = patternName)
+    array.push(candlePatternLabels, newPatternLabel)
+    if array.size(candlePatternLabels) > maxCandlePatternLabels
+        label.delete(array.shift(candlePatternLabels))
+
+float patternRange = high - low
+float patternBody = math.abs(close - open)
+float patternUpperWick = high - math.max(open, close)
+float patternLowerWick = math.min(open, close) - low
+bool hasPatternBody = patternRange > syminfo.mintick and patternBody >= syminfo.mintick
+bool longUpperWick = hasPatternBody and patternUpperWick >= patternBody * longWickToBody and patternLowerWick <= patternBody * 0.75
+
+bool invertedHammer = longUpperWick and close < candlePatternTrendEma
+bool shootingStar = longUpperWick and close > candlePatternTrendEma
+bool bullishMarubozu = patternRange > syminfo.mintick and close > open and patternBody / patternRange * 100 >= marubozuBodyPercent
+bool bearishMarubozu = patternRange > syminfo.mintick and close < open and patternBody / patternRange * 100 >= marubozuBodyPercent
+bool bullishEngulfing = bar_index > 0 and close > open and close[1] < open[1] and open <= close[1] and close >= open[1]
+bool bearishEngulfing = bar_index > 0 and close < open and close[1] > open[1] and open >= close[1] and close <= open[1]
+bool darkCloudCover = bar_index > 0 and close[1] > open[1] and close < open and open > open[1] and close < (open[1] + close[1]) / 2 and close > open[1]
+
+// One priority-selected annotation per confirmed candle keeps the chart legible.
+if showCandlePatterns and barstate.isconfirmed
+    if showDarkCloudPattern and darkCloudCover
+        drawCandlePattern(false, "C", "Dark Cloud Cover")
+    else if showEngulfingPatterns and bullishEngulfing
+        drawCandlePattern(true, "E", "Bullish Engulfing")
+    else if showEngulfingPatterns and bearishEngulfing
+        drawCandlePattern(false, "E", "Bearish Engulfing")
+    else if showInvertedHammerPattern and invertedHammer
+        drawCandlePattern(true, "I", "Inverted Hammer")
+    else if showShootingStarPattern and shootingStar
+        drawCandlePattern(false, "S", "Shooting Star")
+    else if showMarubozuPattern and bullishMarubozu
+        drawCandlePattern(true, "M", "Bullish Marubozu")
+    else if showMarubozuPattern and bearishMarubozu
+        drawCandlePattern(false, "M", "Bearish Marubozu")
+
+//====================================================================
+//====================== SIGNAL TRADE PLAN ===========================
+//====================================================================
+
+groupTradePlan = "14 • SIGNAL TRADE PLAN"
+showSignalTradePlan = input.bool(true, "Show Entry / SL / Targets", group = groupTradePlan, tooltip = "Creates one trade plan from the latest confirmed SB, B, BI, SS, S, or SI signal. Entry is the next candle's open; a new signal replaces the previous plan.")
+tradePlanProjectionBars = input.int(24, "Line Length (Bars)", minval = 5, maxval = 200, group = groupTradePlan, tooltip = "How many chart bars the Entry, SL, and target lines extend. This prevents a completed plan from running across future sessions.")
+tradePlanLineStyle = input.string("Solid", "Line Style", options = ["Solid", "Dashed", "Dotted"], group = groupTradePlan, tooltip = "Visual style used for the Entry, Stop Loss, and target lines.")
+showTradePlanTargetTicks = input.bool(true, "Mark Reached Targets", group = groupTradePlan, tooltip = "Adds a check mark beside a reached target label and changes that label to grey.")
+removeCompletedTradePlan = input.bool(true, "Remove Plan After All Targets", group = groupTradePlan, tooltip = "Removes the Entry, Stop Loss, and all target lines and labels as soon as TP1, TP2, and TP3 have all been reached. This keeps the chart clear for the next signal.")
+removeStoppedTradePlan = input.bool(true, "Remove Plan If Stop Loss Hits", group = groupTradePlan, tooltip = "Removes the complete plan immediately when its Stop Loss is reached. If one candle reaches both a target and the stop, Stop Loss takes priority because the intrabar order is unknown.")
+tradePlanStopBufferATR = input.float(0.25, "Stop Buffer (ATR)", minval = 0.0, maxval = 5.0, step = 0.05, group = groupTradePlan, tooltip = "Extra distance beyond the signal candle's high or low. This helps prevent a stop being placed exactly at an obvious swing point.")
+tradePlanTarget1R = input.float(1.0, "Target 1 (R)", minval = 0.25, maxval = 10.0, step = 0.25, group = groupTradePlan, inline = "tradeTargets", tooltip = "First target as a multiple of the entry-to-stop distance.")
+tradePlanTarget2R = input.float(2.0, "Target 2 (R)", minval = 0.25, maxval = 20.0, step = 0.25, group = groupTradePlan, inline = "tradeTargets", tooltip = "Second target as a multiple of the entry-to-stop distance.")
+tradePlanTarget3R = input.float(3.0, "Target 3 (R)", minval = 0.25, maxval = 30.0, step = 0.25, group = groupTradePlan, inline = "tradeTargets", tooltip = "Final target as a multiple of the entry-to-stop distance.")
+float tradePlanAtr = ta.atr(14)
+
+tradePlanLineStyleValue = switch tradePlanLineStyle
+    "Dashed" => line.style_dashed
+    "Dotted" => line.style_dotted
+    => line.style_solid
+
+var line tradePlanEntryLine = na
+var line tradePlanStopLine = na
+var line tradePlanTarget1Line = na
+var line tradePlanTarget2Line = na
+var line tradePlanTarget3Line = na
+var label tradePlanEntryLabel = na
+var label tradePlanStopLabel = na
+var label tradePlanTarget1Label = na
+var label tradePlanTarget2Label = na
+var label tradePlanTarget3Label = na
+var int tradePlanEndBar = na
+var int tradePlanDirection = 0
+var float tradePlanStopPrice = na
+var float tradePlanTarget1Price = na
+var float tradePlanTarget2Price = na
+var float tradePlanTarget3Price = na
+var bool tradePlanTarget1Hit = false
+var bool tradePlanTarget2Hit = false
+var bool tradePlanTarget3Hit = false
+varip int tradePlanSignalBar = na
+
+markTradePlanTargetReached(label targetLabel, string targetName, float targetPrice) =>
+    label.set_text(targetLabel, targetName + " ✓ (" + str.tostring(targetPrice, format.mintick) + ")")
+    label.set_color(targetLabel, color.gray)
+    label.set_textcolor(targetLabel, color.white)
+
+deleteTradePlanGraphics() =>
+    line.delete(tradePlanEntryLine)
+    line.delete(tradePlanStopLine)
+    line.delete(tradePlanTarget1Line)
+    line.delete(tradePlanTarget2Line)
+    line.delete(tradePlanTarget3Line)
+    label.delete(tradePlanEntryLabel)
+    label.delete(tradePlanStopLabel)
+    label.delete(tradePlanTarget1Label)
+    label.delete(tradePlanTarget2Label)
+    label.delete(tradePlanTarget3Label)
+
+bool nextCandleLongPlan = startLongTrade[1]
+bool nextCandleShortPlan = startShortTrade[1]
+bool isNewTradePlanSignal = (nextCandleLongPlan or nextCandleShortPlan) and (na(tradePlanSignalBar) or tradePlanSignalBar != bar_index - 1)
+
+if showSignalTradePlan and isNewTradePlanSignal
+    deleteTradePlanGraphics()
+    tradePlanDirection := 0
+    tradePlanStopPrice := na
+    tradePlanTarget1Price := na
+    tradePlanTarget2Price := na
+    tradePlanTarget3Price := na
+    tradePlanTarget1Hit := false
+    tradePlanTarget2Hit := false
+    tradePlanTarget3Hit := false
+    tradePlanSignalBar := bar_index - 1
+
+    float planEntry = open
+    float planAtr = nz(tradePlanAtr[1], tradePlanAtr)
+    float planStop = nextCandleLongPlan ? low[1] - planAtr * tradePlanStopBufferATR : high[1] + planAtr * tradePlanStopBufferATR
+    float planRisk = nextCandleLongPlan ? planEntry - planStop : planStop - planEntry
+
+    // A gap through the proposed stop invalidates the plan rather than drawing
+    // a misleading negative-risk target structure.
+    if planRisk > syminfo.mintick
+        float planTarget1 = nextCandleLongPlan ? planEntry + planRisk * tradePlanTarget1R : planEntry - planRisk * tradePlanTarget1R
+        float planTarget2 = nextCandleLongPlan ? planEntry + planRisk * tradePlanTarget2R : planEntry - planRisk * tradePlanTarget2R
+        float planTarget3 = nextCandleLongPlan ? planEntry + planRisk * tradePlanTarget3R : planEntry - planRisk * tradePlanTarget3R
+        tradePlanEndBar := bar_index + tradePlanProjectionBars
+        tradePlanDirection := nextCandleLongPlan ? 1 : -1
+        tradePlanStopPrice := planStop
+        tradePlanTarget1Price := planTarget1
+        tradePlanTarget2Price := planTarget2
+        tradePlanTarget3Price := planTarget3
+
+        tradePlanEntryLine := line.new(bar_index, planEntry, tradePlanEndBar, planEntry, xloc = xloc.bar_index, extend = extend.none, color = color.blue, width = 2, style = tradePlanLineStyleValue)
+        tradePlanStopLine := line.new(bar_index, planStop, tradePlanEndBar, planStop, xloc = xloc.bar_index, extend = extend.none, color = color.red, width = 2, style = tradePlanLineStyleValue)
+        tradePlanTarget1Line := line.new(bar_index, planTarget1, tradePlanEndBar, planTarget1, xloc = xloc.bar_index, extend = extend.none, color = color.lime, width = 1, style = tradePlanLineStyleValue)
+        tradePlanTarget2Line := line.new(bar_index, planTarget2, tradePlanEndBar, planTarget2, xloc = xloc.bar_index, extend = extend.none, color = color.teal, width = 1, style = tradePlanLineStyleValue)
+        tradePlanTarget3Line := line.new(bar_index, planTarget3, tradePlanEndBar, planTarget3, xloc = xloc.bar_index, extend = extend.none, color = color.green, width = 1, style = tradePlanLineStyleValue)
+
+        tradePlanEntryLabel := label.new(tradePlanEndBar, planEntry, "ENTRY (" + str.tostring(planEntry, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = color.blue, textcolor = color.white, size = size.small, tooltip = "Entry at the next candle's open after the confirmed signal.")
+        tradePlanStopLabel := label.new(tradePlanEndBar, planStop, "SL (" + str.tostring(planStop, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = color.red, textcolor = color.white, size = size.small, tooltip = "Stop beyond the signal candle, plus the selected ATR buffer.")
+        tradePlanTarget1Label := label.new(tradePlanEndBar, planTarget1, "TP1 (" + str.tostring(planTarget1, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = color.lime, textcolor = color.white, size = size.small, tooltip = "Target 1: " + str.tostring(tradePlanTarget1R) + "R.")
+        tradePlanTarget2Label := label.new(tradePlanEndBar, planTarget2, "TP2 (" + str.tostring(planTarget2, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = color.teal, textcolor = color.white, size = size.small, tooltip = "Target 2: " + str.tostring(tradePlanTarget2R) + "R.")
+        tradePlanTarget3Label := label.new(tradePlanEndBar, planTarget3, "TP3 (" + str.tostring(planTarget3, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = color.green, textcolor = color.white, size = size.small, tooltip = "Target 3: " + str.tostring(tradePlanTarget3R) + "R.")
+
+if showSignalTradePlan and tradePlanDirection != 0
+    bool stopLossReached = tradePlanDirection == 1 ? low <= tradePlanStopPrice : high >= tradePlanStopPrice
+    bool target1Reached = tradePlanDirection == 1 ? high >= tradePlanTarget1Price : low <= tradePlanTarget1Price
+    bool target2Reached = tradePlanDirection == 1 ? high >= tradePlanTarget2Price : low <= tradePlanTarget2Price
+    bool target3Reached = tradePlanDirection == 1 ? high >= tradePlanTarget3Price : low <= tradePlanTarget3Price
+    if removeStoppedTradePlan and stopLossReached
+        deleteTradePlanGraphics()
+        tradePlanDirection := 0
+        tradePlanStopPrice := na
+        tradePlanTarget1Price := na
+        tradePlanTarget2Price := na
+        tradePlanTarget3Price := na
+    else
+        if not tradePlanTarget1Hit and target1Reached
+            tradePlanTarget1Hit := true
+            if showTradePlanTargetTicks
+                markTradePlanTargetReached(tradePlanTarget1Label, "TP1", tradePlanTarget1Price)
+        if not tradePlanTarget2Hit and target2Reached
+            tradePlanTarget2Hit := true
+            if showTradePlanTargetTicks
+                markTradePlanTargetReached(tradePlanTarget2Label, "TP2", tradePlanTarget2Price)
+        if not tradePlanTarget3Hit and target3Reached
+            tradePlanTarget3Hit := true
+            if showTradePlanTargetTicks
+                markTradePlanTargetReached(tradePlanTarget3Label, "TP3", tradePlanTarget3Price)
+        if removeCompletedTradePlan and tradePlanTarget1Hit and tradePlanTarget2Hit and tradePlanTarget3Hit
+            deleteTradePlanGraphics()
+            tradePlanDirection := 0
+            tradePlanStopPrice := na
+            tradePlanTarget1Price := na
+            tradePlanTarget2Price := na
+            tradePlanTarget3Price := na
+
+//====================================================================
+//================== MANUAL S/R PROXIMITY LEVELS =====================
+//====================================================================
+
+groupManualSR = "15 • MANUAL LEVELS"
+showManualSR = input.bool(true, "Enable Manual Levels", group = groupManualSR, tooltip = "Shows your closest manual levels above and below price. A level above price is labelled Resistance; after price moves above it, the same level automatically becomes Support.")
+manualLevelValues = input.text_area("18840.00, 21281.70, 21500.00, 21743.60\n21967.30, 22182.00, 22467.10, 22662.40\n22952.35, 23359.30, 23555.00, 23867.25\n24221.30, 24337.50, 24464.75, 24576.80\n24702.65, 25027.85, 25120.75, 25389.25\n25486.40, 25640.85, 25794.90, 26030.00\n26136.10, 26213.05, 26301.15, 26373.10", "Manual Levels", group = groupManualSR, tooltip = "All levels from your Nifty screenshot are preloaded in one list. Use one level per line or separate values with commas. The indicator decides whether each nearby level is Support or Resistance from the current price, so you never need to move a value between boxes. Do not use thousand separators: enter 24000, not 24,000.")
+manualLevelsPerSide = input.int(2, "Nearest Levels Per Side", minval = 1, maxval = 5, group = groupManualSR, tooltip = "Shows this many nearest levels below price as Support and above price as Resistance. Default: two Supports and two Resistances.")
+manualMoveToNextSession = input.bool(true, "Move to Next Session at Close", group = groupManualSR, tooltip = "Shows manual levels for the active market session only. After the session closes, they move to the following session, where Support and Resistance are recalculated from price.")
+manualSupportColor = input.color(color.lime, "Support Color", group = groupManualSR, inline = "manualColors")
+manualResistanceColor = input.color(color.red, "Resistance Color", group = groupManualSR, inline = "manualColors")
+manualSRLineStyleInput = input.string("Dashed", "Line Style", options = ["Solid", "Dashed", "Dotted"], group = groupManualSR)
+manualSRLineWidth = input.int(1, "Line Width", minval = 1, maxval = 5, group = groupManualSR)
+
+manualSRLineStyle = switch manualSRLineStyleInput
+    "Solid" => line.style_solid
+    "Dotted" => line.style_dotted
+    => line.style_dashed
+
+var array<line> manualSRLines = array.new<line>()
+var array<label> manualSRLabels = array.new<label>()
+
+parseManualPriceList(string priceList) =>
+    array<float> parsedPrices = array.new_float()
+    string commaSeparatedList = str.replace_all(str.replace_all(priceList, "\n", ","), "\r", ",")
+    array<string> priceParts = str.split(commaSeparatedList, ",")
+    for pricePart in priceParts
+        float parsedPrice = str.tonumber(str.trim(pricePart))
+        if not na(parsedPrice)
+            parsedPrices.push(parsedPrice)
+    parsedPrices
+
+clearManualSRGraphics() =>
+    for manualLine in manualSRLines
+        line.delete(manualLine)
+    for manualLabel in manualSRLabels
+        label.delete(manualLabel)
+    array.clear(manualSRLines)
+    array.clear(manualSRLabels)
+
+drawManualSRLevel(float levelPrice, bool isResistance) =>
+    color levelColor = isResistance ? manualResistanceColor : manualSupportColor
+    string levelName = isResistance ? "MR" : "MS"
+    bool moveToFollowingSession = manualMoveToNextSession and not isCryptoOpenPointSession and marketSessionClosed
+    int levelStartTime = moveToFollowingSession ? nextTradingSessionStart : sessionStart
+    int levelEndTime = moveToFollowingSession ? nextTradingSessionEnd : sessionEnd
+    line newManualLine = line.new(levelStartTime, levelPrice, levelEndTime, levelPrice, xloc = xloc.bar_time, color = levelColor, style = manualSRLineStyle, width = manualSRLineWidth)
+    label newManualLabel = label.new(levelEndTime, levelPrice, levelName + " (" + str.tostring(levelPrice, format.mintick) + ")", xloc = xloc.bar_time, style = label.style_label_left, color = levelColor, textcolor = color.white, size = size.small)
+    manualSRLines.push(newManualLine)
+    manualSRLabels.push(newManualLabel)
+
+drawNearestManualLevels(array<float> levelPrices, bool isResistance) =>
+    array<float> displayedPrices = array.new_float()
+    for selection = 0 to manualLevelsPerSide - 1
+        float nearestPrice = na
+        float nearestDistance = 1e20
+        for levelPrice in levelPrices
+            float distanceFromPrice = isResistance ? levelPrice - close : close - levelPrice
+            // A level exactly at price is treated as resistance until price
+            // closes above it, preventing the same manual level showing twice.
+            bool isOnCorrectSide = isResistance ? distanceFromPrice >= 0 : distanceFromPrice > 0
+            if isOnCorrectSide and not array.includes(displayedPrices, levelPrice) and distanceFromPrice < nearestDistance
+                nearestPrice := levelPrice
+                nearestDistance := distanceFromPrice
+        if not na(nearestPrice)
+            drawManualSRLevel(nearestPrice, isResistance)
+            displayedPrices.push(nearestPrice)
+
+// These drawings are rebuilt only on the latest bar. This keeps the feature
+// responsive in live markets without populating every historical level. The
+// visible levels span whole sessions rather than starting near the candle.
+if barstate.islast
+    clearManualSRGraphics()
+    if showManualSR
+        array<float> manualLevels = parseManualPriceList(manualLevelValues)
+        drawNearestManualLevels(manualLevels, false)
+        drawNearestManualLevels(manualLevels, true)
+
+// ===================== 
+// ==== Backtesting ====
+// =====================
+
+// The following can be used to stream signals to a backtest adapter
+backTestStream = switch
+    startLongTrade => 1
+    endLongTrade => 2
+    startShortTrade => -1
+    endShortTrade => -2
+plot(backTestStream, "Backtest Stream", display=display.none)
+
+// The statistics panel intentionally reports only the ML model's own
+// backtest. Visual tools such as SMC, ORB, liquidity sweeps, and manual levels
+// are confluence references and are not represented as strategy rules here.
+init_combined_table() =>
+    c_transparent = color.new(color.black, 100)
+    table.new(position.top_right, 2, 5, frame_color=color.new(color.black, 100), frame_width=1, border_width=1, border_color=c_transparent)
+
+update_combined_table(tbl, totalTrades, totalWins, totalLosses, totalEarlySignalFlips) =>
+    bgHeader = color.rgb(35,35,35)
+    bgCell = color.rgb(65,65,65)
+    txtLabel = color.silver
+    txtGreen = color.lime
+    txtOrange = color.orange
+    txtWhite = color.white
+    text_size = size.small
+
+    table.cell(tbl, 0, 0, "ML Trade Stats", bgcolor=bgHeader, text_color=txtWhite, text_size=text_size, text_halign=text.align_center)
+    table.cell(tbl, 1, 0, "", bgcolor=bgHeader)
+    table.merge_cells(tbl, 0, 0, 1, 0)
+    table.cell(tbl, 0, 1, "Win rate", bgcolor=bgCell, text_color=txtLabel, text_halign=text.align_center, text_size=text_size)
+    table.cell(tbl, 1, 1, totalTrades > 0 ? str.tostring(totalWins / totalTrades, "#.#%") : "0%", bgcolor=bgCell, text_color=txtGreen, text_halign=text.align_center, text_size=text_size)
+    table.cell(tbl, 0, 2, "Trades", bgcolor=bgCell, text_color=txtLabel, text_halign=text.align_center, text_size=text_size)
+    table.cell(tbl, 1, 2, str.tostring(totalTrades, "#") + " (" + str.tostring(totalWins, "#") + "|" + str.tostring(totalLosses, "#") + ")", bgcolor=bgCell, text_color=txtWhite, text_halign=text.align_center, text_size=text_size)
+    table.cell(tbl, 0, 3, "Win / Loss", bgcolor=bgCell, text_color=txtLabel, text_halign=text.align_center, text_size=text_size)
+    table.cell(tbl, 1, 3, totalLosses > 0 ? str.tostring(totalWins / totalLosses, "0.00") : "N/A", bgcolor=bgCell, text_color=txtGreen, text_halign=text.align_center, text_size=text_size)
+    table.cell(tbl, 0, 4, "Early flips", bgcolor=bgCell, text_color=txtLabel, text_halign=text.align_center, text_size=text_size)
+    table.cell(tbl, 1, 4, str.tostring(totalEarlySignalFlips, "#"), bgcolor=bgCell, text_color=txtOrange, text_halign=text.align_center, text_size=text_size)
+
+if showTradeStats
+    [totalWins, totalLosses, totalEarlySignalFlips, totalTrades, tradeStatsHeader, winLossRatio, winRate] = ml.backtest(high, low, open, startLongTrade, endLongTrade, startShortTrade, endShortTrade, isEarlySignalFlip, maxBarsBackIndex, bar_index, mlSettings.source, useWorstCase)
+    var tbl = init_combined_table()
+    if barstate.islast
+        update_combined_table(tbl, totalTrades, totalWins, totalLosses, totalEarlySignalFlips)
+
+//====================================================================
+//========================== DISCLAIMER ===============================
+//====================================================================
+
+groupDisclaimer = "16 • DISCLAIMER"
+showDisclaimerWatermark = input.bool(true, "Show Disclaimer Watermark", group=groupDisclaimer)
+
+var table disclaimerWatermark = table.new(
+     position.bottom_center,
+     1,
+     1,
+     frame_color=color.new(color.black, 100),
+     frame_width=0,
+     border_color=color.new(color.black, 100),
+     border_width=0)
+
+if barstate.islast
+    table.cell(
+         disclaimerWatermark,
+         0,
+         0,
+         showDisclaimerWatermark ? "FOR ANALYSIS PURPOSES ONLY - NOT A TRADING RECOMMENDATION" : "",
+         text_color=color.new(color.silver, 25),
+         text_size=size.small,
+         text_halign=text.align_center,
+         bgcolor=color.new(color.black, 100))
