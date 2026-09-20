@@ -109,7 +109,7 @@ MlSettings mlSettings =
    
 // Trade Stats Settings
 // Note: The trade stats section is NOT intended to be used as a replacement for proper backtesting. It is intended to be used for calibration purposes only.
-showTradeStats = input.bool(false, 'Show Trade Stats', tooltip='Displays the trade stats for a given configuration. Useful for optimizing the settings in the Feature Engineering section. This should NOT replace backtesting and should be used for calibration purposes only. Early Signal Flips represent instances where the model changes signals before 4 bars elapses; high values can indicate choppy (ranging) market conditions. Turn this off when you do not need the table; it avoids the additional statistics calculation.', group="01 • ML — GENERAL")
+showTradeStats = input.bool(true, 'Show Trade Stats', tooltip='Displays the trade stats for a given configuration. Useful for optimizing the settings in the Feature Engineering section. This should NOT replace backtesting and should be used for calibration purposes only. Early Signal Flips represent instances where the model changes signals before 4 bars elapses; high values can indicate choppy (ranging) market conditions. Turn this off when you do not need the table; it avoids the additional statistics calculation.', group="01 • ML — GENERAL")
 useWorstCase = input.bool(false, "Use Worst Case Estimates", tooltip="Whether to use the worst case scenario for backtesting. This option can be useful for creating a conservative estimate that is based on close prices only, thus avoiding the effects of intrabar repainting. This option assumes that the user does not enter when the signal first appears and instead waits for the bar to close as confirmation. On larger timeframes, this can mean entering after a large move has already occurred. Leaving this option disabled is generally better for those that use this indicator as a source of confluence and prefer estimates that demonstrate discretionary mid-bar entries. Leaving this option enabled may be more consistent with traditional backtesting results.", group="01 • ML — GENERAL")
 
 // When enabled, this option allows the ML model to analyze the entire chart history for pattern recognition,
@@ -1905,11 +1905,53 @@ if barstate.islast
         drawNearestManualLevels(manualLevels, false)
         drawNearestManualLevels(manualLevels, true)
 
-// ===================== 
-// ==== Backtesting ====
-// =====================
+//====================================================================
+//==================== INTRADAY EDGE TABLE ============================
+//====================================================================
 
-// The following can be used to stream signals to a backtest adapter
+groupDashboard = "17 • INTRADAY EDGE DASHBOARD"
+showIntradayDashboard = input.bool(true, "Show Intraday Edge Table", group = groupDashboard)
+dashboardPositionInput = input.string("Top Right", "Table Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = groupDashboard)
+dashboardTextSizeInput = input.string("Small", "Text Size", options = ["Tiny", "Small", "Normal"], group = groupDashboard)
+
+dashboardPosition = switch dashboardPositionInput
+    "Top Left" => position.top_left
+    "Bottom Right" => position.bottom_right
+    "Bottom Left" => position.bottom_left
+    => position.top_right
+
+dashboardTextSize = switch dashboardTextSizeInput
+    "Tiny" => size.tiny
+    "Normal" => size.normal
+    => size.small
+
+// Reconstructed display calculations: the reference image supplies the layout,
+// but not the original formulas. None of these values change ML trade signals.
+bool dashboardTrendReady = not na(yhat1) and not na(yhat1[1]) and (not useKernelSmoothing or not na(yhat2))
+int dashboardTrend = not dashboardTrendReady ? 0 : useKernelSmoothing ? (yhat2 > yhat1 ? 1 : yhat2 < yhat1 ? -1 : 0) : (isBullishRate ? 1 : isBearishRate ? -1 : 0)
+int dashboardBias = prediction > 0 ? 1 : prediction < 0 ? -1 : 0
+bool dashboardTrending = ml.regime_filter(ohlc4, filterSettings.regimeThreshold, true)
+float dashboardRelativeVolume = not na(smcAverageVolume) and smcAverageVolume > 0 ? volume / smcAverageVolume : na
+bool dashboardVolumeHigh = not na(dashboardRelativeVolume) and dashboardRelativeVolume >= smcVolumeMultiplier
+bool dashboardOpenAvailable = timeframe.isintraday and openPointSessionActive and not na(dailyOpen)
+bool dashboardORBAvailable = showORB and showIntradaySessionLevels and openPointSessionActive and orbLocked and not na(orbHigh) and not na(orbLow)
+// Six directional confirmations: ML vote, kernel, session open, structure,
+// opening-range breakout, and above-threshold volume. Unavailable items score 0.
+int dashboardStrength = dashboardBias == 0 ? 0 : 1 + (dashboardTrend == dashboardBias ? 1 : 0) + (dashboardOpenAvailable and (dashboardBias == 1 ? close > dailyOpen : close < dailyOpen) ? 1 : 0) + ((dashboardBias == 1 ? marketStructure == "BULL" : marketStructure == "BEAR") ? 1 : 0) + (dashboardORBAvailable and (dashboardBias == 1 ? close > orbHigh : close < orbLow) ? 1 : 0) + (dashboardVolumeHigh ? 1 : 0)
+bool dashboardLongSignal = startLongTrade and barstate.isconfirmed
+bool dashboardShortSignal = startShortTrade and barstate.isconfirmed
+string dashboardOption = dashboardLongSignal ? "LONG" : dashboardShortSignal ? "SHORT" : "WAIT"
+string dashboardSignal = dashboardLongSignal ? (mlStrongSignal ? "STRONG BUY" : mlStandardSignal ? "BUY" : "BUY IGNORE") : dashboardShortSignal ? (mlStrongSignal ? "STRONG SELL" : mlStandardSignal ? "SELL" : "SELL IGNORE") : "NO SIGNAL"
+string dashboardVolume = na(dashboardRelativeVolume) ? "N/A" : dashboardVolumeHigh ? "HIGH" : dashboardRelativeVolume < 0.8 ? "LOW" : "NORMAL"
+string dashboardLiquidity = bullLS ? "BULLISH SWEEP" : bearLS ? "BEARISH SWEEP" : "NONE"
+string dashboardORB = not dashboardORBAvailable ? "N/A" : close > orbHigh ? "ABOVE ORB" : close < orbLow ? "BELOW ORB" : "INSIDE ORB"
+string dashboardRisk = dashboardStrength >= 5 ? "LOW" : dashboardStrength >= 4 ? "MEDIUM" : "HIGH"
+
+intradayDashboardRow(table panel, int row, string caption, string value, color valueColor) =>
+    table.cell(panel, 0, row, caption, text_color = color.silver, bgcolor = color.rgb(65, 65, 65), text_size = dashboardTextSize, text_halign = text.align_center)
+    table.cell(panel, 1, row, value, text_color = valueColor, bgcolor = color.rgb(65, 65, 65), text_size = dashboardTextSize, text_halign = text.align_center)
+
+// Keep the original hidden adapter output independent of the table.
 backTestStream = switch
     startLongTrade => 1
     endLongTrade => 2
@@ -1917,39 +1959,41 @@ backTestStream = switch
     endShortTrade => -2
 plot(backTestStream, "Backtest Stream", display=display.none)
 
-// The statistics panel intentionally reports only the ML model's own
-// backtest. Visual tools such as SMC, ORB, liquidity sweeps, and manual levels
-// are confluence references and are not represented as strategy rules here.
-init_combined_table() =>
-    c_transparent = color.new(color.black, 100)
-    table.new(position.top_right, 2, 5, frame_color=color.new(color.black, 100), frame_width=1, border_width=1, border_color=c_transparent)
-
-update_combined_table(tbl, totalTrades, totalWins, totalLosses, totalEarlySignalFlips) =>
-    bgHeader = color.rgb(35,35,35)
-    bgCell = color.rgb(65,65,65)
-    txtLabel = color.silver
-    txtGreen = color.lime
-    txtOrange = color.orange
-    txtWhite = color.white
-    text_size = size.small
-
-    table.cell(tbl, 0, 0, "ML Trade Stats", bgcolor=bgHeader, text_color=txtWhite, text_size=text_size, text_halign=text.align_center)
-    table.cell(tbl, 1, 0, "", bgcolor=bgHeader)
-    table.merge_cells(tbl, 0, 0, 1, 0)
-    table.cell(tbl, 0, 1, "Win rate", bgcolor=bgCell, text_color=txtLabel, text_halign=text.align_center, text_size=text_size)
-    table.cell(tbl, 1, 1, totalTrades > 0 ? str.tostring(totalWins / totalTrades, "#.#%") : "0%", bgcolor=bgCell, text_color=txtGreen, text_halign=text.align_center, text_size=text_size)
-    table.cell(tbl, 0, 2, "Trades", bgcolor=bgCell, text_color=txtLabel, text_halign=text.align_center, text_size=text_size)
-    table.cell(tbl, 1, 2, str.tostring(totalTrades, "#") + " (" + str.tostring(totalWins, "#") + "|" + str.tostring(totalLosses, "#") + ")", bgcolor=bgCell, text_color=txtWhite, text_halign=text.align_center, text_size=text_size)
-    table.cell(tbl, 0, 3, "Win / Loss", bgcolor=bgCell, text_color=txtLabel, text_halign=text.align_center, text_size=text_size)
-    table.cell(tbl, 1, 3, totalLosses > 0 ? str.tostring(totalWins / totalLosses, "0.00") : "N/A", bgcolor=bgCell, text_color=txtGreen, text_halign=text.align_center, text_size=text_size)
-    table.cell(tbl, 0, 4, "Early flips", bgcolor=bgCell, text_color=txtLabel, text_halign=text.align_center, text_size=text_size)
-    table.cell(tbl, 1, 4, str.tostring(totalEarlySignalFlips, "#"), bgcolor=bgCell, text_color=txtOrange, text_halign=text.align_center, text_size=text_size)
+// One table keeps statistics, spacer, and dashboard aligned like the reference.
+int dashboardHeaderRow = showTradeStats ? 6 : 0
+int dashboardRowCount = (showTradeStats ? 5 : 0) + (showIntradayDashboard ? (showTradeStats ? 12 : 11) : 0)
+var table intradayDashboard = table.new(dashboardPosition, 2, math.max(dashboardRowCount, 1), frame_color = color.silver, frame_width = 1, border_width = 1, border_color = color.silver)
+if barstate.isfirst
+    if showTradeStats
+        table.merge_cells(intradayDashboard, 0, 0, 1, 0)
+    if showIntradayDashboard
+        if showTradeStats
+            table.merge_cells(intradayDashboard, 0, 5, 1, 5)
+        table.merge_cells(intradayDashboard, 0, dashboardHeaderRow, 1, dashboardHeaderRow)
 
 if showTradeStats
     [totalWins, totalLosses, totalEarlySignalFlips, totalTrades, tradeStatsHeader, winLossRatio, winRate] = ml.backtest(high, low, open, startLongTrade, endLongTrade, startShortTrade, endShortTrade, isEarlySignalFlip, maxBarsBackIndex, bar_index, mlSettings.source, useWorstCase)
-    var tbl = init_combined_table()
     if barstate.islast
-        update_combined_table(tbl, totalTrades, totalWins, totalLosses, totalEarlySignalFlips)
+        table.cell(intradayDashboard, 0, 0, "📈 Trade Stats", bgcolor = color.rgb(35, 35, 35), text_color = color.white, text_size = dashboardTextSize, text_halign = text.align_center)
+        intradayDashboardRow(intradayDashboard, 1, "Winrate", totalTrades > 0 ? str.tostring(totalWins / totalTrades, "#.##%") : "0%", #009988)
+        intradayDashboardRow(intradayDashboard, 2, "Trades", str.tostring(totalTrades, "#") + " (" + str.tostring(totalWins, "#") + "|" + str.tostring(totalLosses, "#") + ")", color.white)
+        intradayDashboardRow(intradayDashboard, 3, "WL Ratio", totalLosses > 0 ? str.tostring(totalWins / totalLosses, "0.00") : "N/A", #009988)
+        intradayDashboardRow(intradayDashboard, 4, "Early Signal Flips", str.tostring(totalEarlySignalFlips, "#"), color.orange)
+
+if barstate.islast and showIntradayDashboard
+    if showTradeStats
+        table.cell(intradayDashboard, 0, 5, "", height = 3, bgcolor = color.rgb(35, 35, 35))
+    table.cell(intradayDashboard, 0, dashboardHeaderRow, "INTRADAY EDGE", bgcolor = color.rgb(35, 35, 35), text_color = color.white, text_size = dashboardTextSize, text_halign = text.align_center)
+    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 1, "Trend", dashboardTrend == 1 ? "UPTREND 🟢" : dashboardTrend == -1 ? "DOWNTREND 🔴" : "NEUTRAL", dashboardTrend == 1 ? #009988 : dashboardTrend == -1 ? #CC3311 : color.orange)
+    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 2, "Bias", dashboardBias == 1 ? "BULLISH" : dashboardBias == -1 ? "BEARISH" : "NEUTRAL", dashboardBias == 1 ? #009988 : dashboardBias == -1 ? #CC3311 : color.orange)
+    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 3, "Option", dashboardOption, dashboardLongSignal ? #009988 : dashboardShortSignal ? #CC3311 : color.orange)
+    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 4, "Signal", dashboardSignal, dashboardLongSignal ? #009988 : dashboardShortSignal ? #CC3311 : color.orange)
+    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 5, "Market", dashboardTrending ? "TRENDING" : "RANGING", dashboardTrending ? color.aqua : color.orange)
+    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 6, "Strength", str.tostring(dashboardStrength) + "/6", dashboardStrength >= 5 ? #009988 : color.yellow)
+    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 7, "Volume", dashboardVolume, color.white)
+    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 8, "Liquidity", dashboardLiquidity, bullLS ? #009988 : bearLS ? #CC3311 : color.white)
+    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 9, "ORB", dashboardORB, dashboardORBAvailable and close > orbHigh ? #009988 : dashboardORBAvailable and close < orbLow ? #CC3311 : color.orange)
+    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 10, "Risk", dashboardRisk, dashboardStrength >= 5 ? #009988 : dashboardStrength >= 4 ? color.orange : #CC3311)
 
 //====================================================================
 //========================== DISCLAIMER ===============================

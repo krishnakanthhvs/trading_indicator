@@ -35,7 +35,8 @@ The script imports `jdehorty/MLExtensions/2` and `jdehorty/KernelFunctions/2`. T
 | Candle patterns | Educational pattern letters with hover descriptions | Disabled |
 | Manual support/resistance | Nearest user-supplied price levels | Enabled |
 | ML bar colors | Optional prediction-based candle tint | Disabled |
-| ML trade statistics | Calibration table for ML entries and exits | Disabled |
+| ML trade statistics | Calibration table for ML entries and exits | Enabled |
+| Intraday Edge dashboard | Trend, bias, option, signal, market, strength, volume, liquidity, ORB, and risk | Enabled |
 | Alerts | Eight ML entry, exit, and kernel conditions | Available |
 | Disclaimer watermark | Analysis-only notice at the bottom of the chart | Enabled |
 
@@ -287,6 +288,28 @@ Alert messages include ticker, price, and chart interval and retain the source's
 The badge timing setting does **not** gate the alert conditions. Use a bar-close alert frequency when confirmed-close notifications are required. Hiding exit crosses or low-confidence badges does not disable the associated alert conditions.
 
 There are no dedicated alert conditions for target/stop touches, ORB breaks, BOS/CHoCH, sweeps, order blocks, candle patterns, or manual levels in this version.
+
+## Intraday Edge dashboard
+
+The main table follows the supplied reference layout: **📈 Trade Stats**, Winrate, Trades, WL Ratio, Early Signal Flips, a blank separator, then **INTRADAY EDGE** with these rows in order:
+
+**Trend, Bias, Option, Signal, Market, Strength, Volume, Liquidity, ORB, Risk.**
+
+Both sections are enabled by default. The table uses grey cells, dark headers, light borders, centered text, and colored status values. The dashboard settings offer four corner positions and three text sizes. Show Trade Stats and Show Intraday Edge Table independently control the two sections. Entry, SL, and target prices are not included in the table; the chart trade-plan feature remains separately configurable.
+
+The screenshot establishes appearance but does not provide the old formulas. The reconstructed display uses these definitions:
+
+- **Trend:** kernel direction, with the existing smoothing setting.
+- **Bias:** direction of the current ML vote total.
+- **Option / Signal:** LONG or SHORT and the signal category on a confirmed entry candle; otherwise WAIT / NO SIGNAL.
+- **Market:** the regime filter evaluated independently of its entry-filter toggle.
+- **Strength:** one point each for directional ML votes, aligned kernel, aligned session open, aligned market structure, aligned ORB breakout, and volume meeting the SMC multiplier. Missing confirmations score zero, for a total of 0–6.
+- **Volume:** HIGH at the SMC volume multiplier, LOW below 0.8 times average, otherwise NORMAL; N/A when unavailable.
+- **Liquidity:** the existing enabled liquidity-sweep module's current bullish/bearish event, otherwise NONE.
+- **ORB:** ABOVE ORB, BELOW ORB, or INSIDE ORB when the range is available; otherwise N/A.
+- **Risk:** LOW for strength 5–6, MEDIUM for 4, HIGH for 0–3. This is a display category, not a measured loss probability.
+
+Values update with the chart and can change intrabar. These summary calculations do not change entry signals, alerts, or trade plans. Numeric values are live calculations rather than the fixed numbers in the reference image.
 
 ## Statistics and backtest output
 
