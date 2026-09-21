@@ -215,7 +215,7 @@ x = input.int(25, "Regression Level", tooltip='Bar index on which to start regre
 lag = input.int(2, "Lag", tooltip="Lag for crossover detection. Lower values result in earlier crossovers. Recommended range: 1-2", inline='1', group='04 • ML — KERNEL')
 
 // Display Settings
-showBarColors = input.bool(false, "Show Bar Colors", tooltip="Optional visual colouring only. It does not change the ML signal.", group="05 • OPTIONAL — ML DISPLAY")
+showBarColors = input.bool(true, "Show Bar Colors", tooltip="Optional visual colouring only. It does not change the ML signal.", group="05 • OPTIONAL — ML DISPLAY")
 useConfidenceGradient = input.bool(defval = true, title = "Use Confidence Gradient", tooltip = "When enabled, the colour intensity reflects the model's vote agreement. It does not represent a probability of profit.", group="05 • OPTIONAL — ML DISPLAY")
 barColorScheme = input.string("Default", "Bar Color Scheme", options=["Default", "Solid"], group="05 • OPTIONAL — ML DISPLAY", tooltip="Choose a subtle gradient or solid tint for the optional ML candle colours.")
 
@@ -466,7 +466,7 @@ signalPreviewSeconds = input.int(30, "Preview Lead Time (Seconds)", minval = 5, 
 signalLabelGapATR = input.float(0.02, "Signal-to-Candle Gap (ATR)", minval = 0.0, maxval = 1.0, step = 0.01, group = groupSignalLabels, tooltip = "A very small gap between the signal badge and candle wick. The default is approximately 1–2 screen pixels on typical charts; use 0 to attach it directly to the wick.")
 showNextCandleEntryDot = input.bool(true, "Show Next-Candle Entry Dot", group = groupSignalLabels, tooltip = "Shows a small orange dot at the opening price of the candle immediately after an SB, B, BI, SS, S, or SI signal. This is the planned entry candle, not the signal candle.")
 entryDotColor = input.color(color.orange, "Entry Dot Color", group = groupSignalLabels, inline = "entryDot", tooltip = "Colour of the dot that marks the planned next-candle entry.")
-entryDotSizeInput = input.string("Small", "Entry Dot Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = groupSignalLabels, inline = "entryDot", tooltip = "Visual size of the next-candle entry dot.")
+entryDotSizeInput = input.string("Tiny", "Entry Dot Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = groupSignalLabels, inline = "entryDot", tooltip = "Visual size of the next-candle entry dot.")
 maxSignalStrengthLabels = input.int(75, "Historical Signal Badges", minval = 25, maxval = 300, group = groupSignalLabels, tooltip = "Maximum number of strength-coded signal badges retained for hover inspection. Lower values keep long charts responsive and clean.")
 
 // The original marker shading reflects the absolute ML prediction. Turn that
@@ -592,14 +592,14 @@ string TT_DB = (
     "differ from EOD values (normal for stocks), the calculated pivot levels will also differ."
 )
 DW = display.data_window
-string GRP00                    = "07 • PIVOT POINTS"
+string GRP00                    = "7.1 • PIVOT POINTS"
 bool showPivotPoints            = input.bool(true, "Show Pivot Points", group = GRP00, tooltip = "Shows or hides all Pivot Point lines and labels. Pivot Points are a visual reference and do not filter the ML signal in this clean version.")
 string pivotTypeInput           = input.string("Traditional", "Type", options = ["Traditional", "Fibonacci", "Woodie", "Classic", "DM", "Camarilla"], group = GRP00)
 string pivotAnchorInput         = input.string("Auto", "Pivots timeframe", options = ["Auto", "Daily", "Weekly", "Monthly", "Quarterly", "Yearly", "Biyearly", "Triyearly", "Quinquennially", "Decennially"], group = GRP00)
 int maxHistoricalPivotsInput    = input.int(1, "Number of pivots back", 1, 200, group = GRP00, display = DW)
 bool isDailyBasedInput          = input.bool(true, "Use daily-based values", tooltip = TT_DB, group = GRP00, display = DW)
 
-string GRP01                    = "07 • PIVOT POINTS — LABELS"
+string GRP01                    = "7.2 • PIVOT POINTS — LABELS"
 bool showLabelsInput            = input.bool(true, "Show labels", group = GRP01, display = DW)
 bool showPricesInput            = input.bool(true, "Show prices", group = GRP01, display = DW)
 string positionLabelsInput      = input.string("Left", "Label Side", options = ["Left", "Right"], group = GRP01, display = DW, active = showLabelsInput or showPricesInput)
@@ -611,7 +611,7 @@ bool showLevel2and3 = pivotTypeInput != "DM"
 bool showLevel4     = pivotTypeInput != "DM" and pivotTypeInput != "Fibonacci"
 bool showLevel5     = pivotTypeInput == "Traditional" or pivotTypeInput == "Camarilla"
 
-string GRP02          = "07 • PIVOT POINTS — LEVELS"
+string GRP02          = "7.3 • PIVOT POINTS — LEVELS"
 int linewidthInput    = input.int(1, "Line width", 1, 100, group = GRP02, display = DW)
 color pColorInput     = input.color(DEFAULT_COLOR, "P", inline = "10", group = GRP02, display = DW)
 bool pShowInput       = input.bool(true, "", inline = "10", group = GRP02, display = DW)
@@ -716,6 +716,8 @@ var int pivotYearMultiplier = switch pivotAnchorInput
     => 1
 
 var matrix<pivotGraphic> drawnGraphics = matrix.new<pivotGraphic>()
+// Shared drawing bounds keep manual levels aligned even when pivots are hidden.
+var array<int> activePivotSpan = array.new_int(2, na)
 
 pivotTimeframeChangeCounter(bool condition) =>
     var int count = 0
@@ -748,6 +750,8 @@ calculatePivots(simple bool isDailyBased) =>
         [pivotPointsArrayStatic, pivotPointsArrayDeveloping, pivotCounter]
 
 affixOldPivots(int endTime) =>
+    if not na(array.get(activePivotSpan, 0))
+        array.set(activePivotSpan, 1, endTime)
     int rows = drawnGraphics.rows()
     if rows > 0
         array<pivotGraphic> lastGraphics = drawnGraphics.row(rows - 1)
@@ -759,6 +763,8 @@ affixOldPivots(int endTime) =>
 drawNewPivots(int startTime, array<float> pivotPointsArray) =>
     array<pivotGraphic> newGraphics = array.new<pivotGraphic>()
     int endTime = startTime + timeframe.in_seconds(pivotTimeframe) * 1000 * pivotYearMultiplier
+    array.set(activePivotSpan, 0, startTime)
+    array.set(activePivotSpan, 1, endTime)
     [labelPosition, labelStyle] = switch positionLabelsInput
         "Left" => [startTime, label.style_label_right]
         "Right" => [endTime, label.style_label_left]
@@ -805,7 +811,7 @@ else if drawnGraphics.rows() > 0 and drawnGraphics.row(drawnGraphics.rows() - 1)
     affixOldPivots(time)
 
 var int firstBarTime = time
-if barstate.islastconfirmedhistory and drawnGraphics.rows() == 0
+if barstate.islastconfirmedhistory and drawnGraphics.rows() == 0 and na(array.get(activePivotSpan, 0))
     if pivotCount > 0 and not na(pivotPointsArrayStatic)
         drawNewPivots(firstBarTime, pivotPointsArrayStatic)
     else if timeframe.isintraday and not isDailyBasedInput
@@ -893,6 +899,9 @@ bool showIntradaySessionLevels = timeframe.isintraday and (not isCryptoOpenPoint
 // Point.
 bool isCommodityInstrument = syminfo.prefix == "MCX" or isMCXSession
 bool hideCommodityOpenPoint = isCommodityInstrument and timeframe.in_seconds() >= timeframe.in_seconds("30")
+string openPointSymbol = str.upper(syminfo.ticker)
+bool isSelectedIndianIndex = syminfo.type == "index" and (openPointSymbol == "NIFTY" or openPointSymbol == "NIFTY50" or openPointSymbol == "NIFTY_50" or openPointSymbol == "BANKNIFTY" or openPointSymbol == "NIFTYBANK" or openPointSymbol == "NIFTY_BANK" or openPointSymbol == "SENSEX")
+bool hideIndexOpenPoint = isSelectedIndianIndex and timeframe.in_seconds() >= timeframe.in_seconds("30")
 // The daily Open Point is valid only during the selected cash/commodity
 // session. Unlike pivots and ORB, it must not remain after that market closes.
 // On a normal chart there is no bar after the final session candle. timenow
@@ -900,7 +909,7 @@ bool hideCommodityOpenPoint = isCommodityInstrument and timeframe.in_seconds() >
 // passed, while extended-hours bars are covered by the time-range test.
 bool marketSessionClosed = not isCryptoOpenPointSession and (time >= sessionEnd or (barstate.islast and timenow >= sessionEnd))
 bool openPointSessionActive = isInOpenPointSession and not marketSessionClosed
-bool showDailyOpenForChart = showDailyOpen and not hideCommodityOpenPoint and openPointSessionActive
+bool showDailyOpenForChart = showDailyOpen and not hideCommodityOpenPoint and not hideIndexOpenPoint and openPointSessionActive
 int openPointEndTime = sessionEnd
 bool showSessionOnlyLevels = showIntradaySessionLevels and openPointSessionActive
 int sessionOnlyLevelEndTime = sessionEnd
@@ -957,7 +966,7 @@ if not showSessionOnlyLevels
 
 groupORB = "09 • ORB LEVELS"
 
-showORB = input.bool(true, "Enable ORB", group = groupORB)
+showORB = input.bool(false, "Enable ORB", group = groupORB)
 
 orbTF = input.string(
      "5",
@@ -1835,7 +1844,6 @@ groupManualSR = "15 • MANUAL LEVELS"
 showManualSR = input.bool(true, "Enable Manual Levels", group = groupManualSR, tooltip = "Shows your closest manual levels above and below price. A level above price is labelled Resistance; after price moves above it, the same level automatically becomes Support.")
 manualLevelValues = input.text_area("18840.00, 21281.70, 21500.00, 21743.60\n21967.30, 22182.00, 22467.10, 22662.40\n22952.35, 23359.30, 23555.00, 23867.25\n24221.30, 24337.50, 24464.75, 24576.80\n24702.65, 25027.85, 25120.75, 25389.25\n25486.40, 25640.85, 25794.90, 26030.00\n26136.10, 26213.05, 26301.15, 26373.10", "Manual Levels", group = groupManualSR, tooltip = "All levels from your Nifty screenshot are preloaded in one list. Use one level per line or separate values with commas. The indicator decides whether each nearby level is Support or Resistance from the current price, so you never need to move a value between boxes. Do not use thousand separators: enter 24000, not 24,000.")
 manualLevelsPerSide = input.int(2, "Nearest Levels Per Side", minval = 1, maxval = 5, group = groupManualSR, tooltip = "Shows this many nearest levels below price as Support and above price as Resistance. Default: two Supports and two Resistances.")
-manualMoveToNextSession = input.bool(true, "Move to Next Session at Close", group = groupManualSR, tooltip = "Shows manual levels for the active market session only. After the session closes, they move to the following session, where Support and Resistance are recalculated from price.")
 manualSupportColor = input.color(color.lime, "Support Color", group = groupManualSR, inline = "manualColors")
 manualResistanceColor = input.color(color.red, "Resistance Color", group = groupManualSR, inline = "manualColors")
 manualSRLineStyleInput = input.string("Dashed", "Line Style", options = ["Solid", "Dashed", "Dotted"], group = groupManualSR)
@@ -1870,9 +1878,8 @@ clearManualSRGraphics() =>
 drawManualSRLevel(float levelPrice, bool isResistance) =>
     color levelColor = isResistance ? manualResistanceColor : manualSupportColor
     string levelName = isResistance ? "MR" : "MS"
-    bool moveToFollowingSession = manualMoveToNextSession and not isCryptoOpenPointSession and marketSessionClosed
-    int levelStartTime = moveToFollowingSession ? nextTradingSessionStart : sessionStart
-    int levelEndTime = moveToFollowingSession ? nextTradingSessionEnd : sessionEnd
+    int levelStartTime = array.get(activePivotSpan, 0)
+    int levelEndTime = array.get(activePivotSpan, 1)
     line newManualLine = line.new(levelStartTime, levelPrice, levelEndTime, levelPrice, xloc = xloc.bar_time, color = levelColor, style = manualSRLineStyle, width = manualSRLineWidth)
     label newManualLabel = label.new(levelEndTime, levelPrice, levelName + " (" + str.tostring(levelPrice, format.mintick) + ")", xloc = xloc.bar_time, style = label.style_label_left, color = levelColor, textcolor = color.white, size = size.small)
     manualSRLines.push(newManualLine)
@@ -1897,10 +1904,10 @@ drawNearestManualLevels(array<float> levelPrices, bool isResistance) =>
 
 // These drawings are rebuilt only on the latest bar. This keeps the feature
 // responsive in live markets without populating every historical level. The
-// visible levels span whole sessions rather than starting near the candle.
+// visible levels share the pivot timeframe span rather than the market session.
 if barstate.islast
     clearManualSRGraphics()
-    if showManualSR
+    if showManualSR and not na(array.get(activePivotSpan, 0)) and not na(array.get(activePivotSpan, 1))
         array<float> manualLevels = parseManualPriceList(manualLevelValues)
         drawNearestManualLevels(manualLevels, false)
         drawNearestManualLevels(manualLevels, true)

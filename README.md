@@ -27,14 +27,14 @@ The script imports `jdehorty/MLExtensions/2` and `jdehorty/KernelFunctions/2`. T
 | Pivot points | Six calculation types with configurable anchors and levels | Enabled |
 | Daily Open Point | Session opening-price reference | Enabled |
 | Weekly Open | Weekly opening-price reference | Disabled |
-| Opening range (ORB) | Session opening-range high, low, and midpoint | Enabled; 5 minutes |
+| Opening range (ORB) | Session opening-range high, low, and midpoint | Disabled; 5 minutes |
 | Liquidity sweeps | Confirmed swing sweeps with rejection and volume checks | Disabled |
 | BOS / CHoCH | Confirmed continuation and reversal structure breaks | Enabled |
 | Equal highs / lows | EQH and EQL liquidity references | Enabled |
 | Order blocks | Supply/demand zones from chart or selected timeframe | Enabled |
 | Candle patterns | Educational pattern letters with hover descriptions | Disabled |
 | Manual support/resistance | Nearest user-supplied price levels | Enabled |
-| ML bar colors | Optional prediction-based candle tint | Disabled |
+| ML bar colors | Optional prediction-based candle tint | Enabled |
 | ML trade statistics | Calibration table for ML entries and exits | Enabled |
 | Intraday Edge dashboard | Trend, bias, option, signal, market, strength, volume, liquidity, ORB, and risk | Enabled |
 | Alerts | Eight ML entry, exit, and kernel conditions | Available |
@@ -106,7 +106,7 @@ Strength measures model vote agreement, **not a probability of profit**. The sta
 - Badge spacing is adjustable in ATR units; the default history limit is 75 badges.
 - Low-confidence badges can be hidden without removing their underlying signals, alerts, entry dots, or trade plans.
 - Turning off strength codes uses plain directional markers. In the current implementation, these plain markers do not use the badge timing gate.
-- An optional orange dot marks the next candle's open after any ML entry signal. Its color and size are configurable.
+- An optional orange dot marks the next candle's open after any ML entry signal. Its color and size are configurable; the default size is Tiny.
 
 Optional bar coloring offers Default and Solid schemes, confidence-gradient control, and color compression. These settings change presentation rather than signal logic.
 
@@ -134,6 +134,8 @@ The default stop buffer is **0.25 × ATR(14)** using the signal candle's ATR, an
 The plan draws reference prices; it does not submit orders or simulate brokerage fills.
 
 ## Pivot points
+
+Settings are organized as **7.1 • PIVOT POINTS**, **7.2 • PIVOT POINTS — LABELS**, and **7.3 • PIVOT POINTS — LEVELS**. Other sections already have unique numbers.
 
 Supported types are **Traditional, Fibonacci, Woodie, Classic, DM, and Camarilla**. The default is Traditional with an Auto anchor and one historical pivot set.
 
@@ -172,10 +174,11 @@ Visibility rules:
 - Session opening levels and ORB are intended for intraday charts.
 - Crypto session levels, including ORB, are hidden on charts of 30 minutes and above.
 - MCX/commodity Daily Open Point is hidden on charts of 30 minutes and above; ORB remains available on higher intraday charts.
+- Nifty 50, Bank Nifty, and Sensex index charts also hide Daily Open Point at 30 minutes and above. This does not disable the separately controlled Weekly Open.
 
 ## Opening range (ORB)
 
-ORB collects the high and low during a configured window after the selected session opening, then locks and draws the completed range.
+ORB is disabled by default. When enabled, it collects the high and low during a configured window after the selected session opening, then locks and draws the completed range.
 
 - Duration choices: **1, 3, 5, 10, 15, 30, or 60 minutes**; default 5 minutes.
 - Skip 0–20 initial chart candles; default 0. This shifts the collection window by the corresponding chart-timeframe duration.
@@ -262,8 +265,8 @@ Enter price levels separated by commas or newlines. The source includes a preloa
 - Levels below price are labeled **MS** (manual support); levels at or above price are labeled **MR** (manual resistance).
 - A level changes role as price moves across it.
 - Repeated prices are not displayed twice on the same side, and invalid text entries are ignored.
-- Drawings are refreshed on the latest bar and span the selected session.
-- By default, levels move to the following trading session after the close for non-crypto profiles. The script uses the chart's next trading day where available, with a calendar-day fallback.
+- Drawings are refreshed on the latest bar and use the same start/end times as the latest pivot set, including its next-period rollover. With Auto pivots this means daily spans through 15-minute charts, weekly spans on higher intraday charts, monthly spans on daily charts, and yearly spans on weekly/monthly charts.
+- Explicit pivot timeframe selections, including multi-year anchors, also control the MS/MR span. This works when pivot lines are hidden. The former session-close movement option is removed because pivot timing now controls the extent.
 - Colors, line style, and width are configurable.
 
 Enter `24000`, not `24,000`: commas separate distinct levels.
