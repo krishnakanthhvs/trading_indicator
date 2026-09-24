@@ -37,6 +37,7 @@ The script imports `jdehorty/MLExtensions/2` and `jdehorty/KernelFunctions/2`. T
 | ML bar colors | Optional prediction-based candle tint | Enabled |
 | ML trade statistics | Calibration table for ML entries and exits | Enabled |
 | Intraday Edge dashboard | Trend, bias, option, signal, market, strength, volume, liquidity, ORB, and risk | Enabled |
+| Multi-TF table | Confirmed trend and latest ML signal per selected timeframe | Enabled; 5, 15, 30 minutes |
 | Alerts | Eight ML entry, exit, and kernel conditions | Available |
 | Disclaimer watermark | Analysis-only notice at the bottom of the chart | Enabled |
 
@@ -298,7 +299,7 @@ The main table follows the supplied reference layout: **📈 Trade Stats**, Winr
 
 **Trend, Bias, Option, Signal, Market, Strength, Volume, Liquidity, ORB, Risk.**
 
-Both sections are enabled by default. The table uses grey cells, dark headers, light borders, centered text, and colored status values. The dashboard settings offer four corner positions and three text sizes. Show Trade Stats and Show Intraday Edge Table independently control the two sections. Entry, SL, and target prices are not included in the table; the chart trade-plan feature remains separately configurable.
+Both sections are enabled by default. The table uses grey cells, dark headers, light borders, centered text, and colored status values. The dashboard settings offer four corner positions and three text sizes. **Show Trade Stats** controls the entire combined table: turning it off hides both sections. The separate Show Intraday Edge Table toggle has been removed. Entry, SL, and target prices are not included in the table; the chart trade-plan feature remains separately configurable.
 
 The screenshot establishes appearance but does not provide the old formulas. The reconstructed display uses these definitions:
 
@@ -313,6 +314,33 @@ The screenshot establishes appearance but does not provide the old formulas. The
 - **Risk:** LOW for strength 5–6, MEDIUM for 4, HIGH for 0–3. This is a display category, not a measured loss probability.
 
 Values update with the chart and can change intrabar. These summary calculations do not change entry signals, alerts, or trade plans. Numeric values are live calculations rather than the fixed numbers in the reference image.
+
+## Multi-timeframe trend and signals
+
+**18 • MULTI-TIMEFRAME TREND / SIGNALS** adds an independent **Show Multi-TF Table** switch. It defaults to a horizontal table at the bottom right:
+
+| TF | 5 Mins | 15 Mins | 30 Mins |
+| --- | --- | --- | --- |
+| Trend/S | Down | Down/SS | Down/S* |
+
+This is an illustrative layout, not live market data. Each column evaluates Intraday Edge's own kernel trend and ML entry logic in its source timeframe. It uses the current feature, neighbor, history, filter, smoothing, and confidence settings. It does not substitute a moving-average crossover signal or add another candle-coloring layer.
+
+- Select any of 1, 2, 3, 5, 10, 15, or 30 minutes; 1, 2, 4, 6, or 12 hours; daily; and weekly. Only 5, 15, and 30 minutes are initially enabled.
+- Trend is **Up**, **Down**, or **Flat**. **N/A** means the requested context has insufficient available data.
+- Signal codes are the same **SB/B/BI/SS/S/SI** categories as chart badges. Hidden low-confidence chart badges do not suppress the table's underlying signals.
+- The latest confirmed entry signal is retained until replaced, including across sessions. **`*` means the signal belongs to an earlier source candle**. Hover to see the signal candle's opening date/time, its age in source bars, and the last evaluated candle's closing time, all in the exchange timezone. A retained signal is not a new entry or an active-position claim.
+- Trend and retained signal may disagree because they describe different times. No suffix means no entry signal has been found in the available model history.
+- Higher timeframes use the prior completed source candle with `lookahead_on`. For example, the opening 15-minute signal is available after its close, on the next market update—not during its first five minutes. The table does not reproduce the chart's live preview badges.
+- The chart's own timeframe reuses confirmed chart signals. Lower timeframes use `request.security_lower_tf()` and retain the latest completed intrabar's model state, including any earlier entry recorded by that state. Empty intrabar results retain the previous available snapshot; check its timestamp.
+- Requested datasets and available intrabar history can differ from a chart opened directly at that timeframe. This history-sensitive ML model therefore cannot promise identical output across different loaded histories. Lower-timeframe coverage is also subject to TradingView data limits.
+- The optional **AVG** column averages available confirmed kernel directions, using the supplied reference's ±0.2 and ±0.8 trend bands. It does not invent an aggregate buy/sell signal.
+- Position and text size are configurable. If the position conflicts with the enabled Trade Stats table, the Multi-TF table moves to the middle left. Its visibility is independent of Show Trade Stats.
+
+Every enabled timeframe runs a separate ML calculation. Enable only the columns needed; turn off Include Full History or reduce Max Bars Back if execution limits occur. Turning off Show Multi-TF Table skips its data requests. No new alerts are added.
+
+The layout and average-trend concept are inspired by the user-supplied **Ox_kali Multi-Timeframe Trend Indicator (MPL 2.0)**. The per-timeframe signal engine follows Intraday Edge's existing model. The separate `mtfModel()` implementation must stay synchronized when changing the chart model's formulas.
+
+Confirmed higher-timeframe requests and lower-timeframe intrabar arrays follow [TradingView's timeframe documentation](https://www.tradingview.com/pine-script-docs/concepts/other-timeframes-and-data/).
 
 ## Statistics and backtest output
 

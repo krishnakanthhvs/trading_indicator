@@ -109,7 +109,7 @@ MlSettings mlSettings =
    
 // Trade Stats Settings
 // Note: The trade stats section is NOT intended to be used as a replacement for proper backtesting. It is intended to be used for calibration purposes only.
-showTradeStats = input.bool(true, 'Show Trade Stats', tooltip='Displays the trade stats for a given configuration. Useful for optimizing the settings in the Feature Engineering section. This should NOT replace backtesting and should be used for calibration purposes only. Early Signal Flips represent instances where the model changes signals before 4 bars elapses; high values can indicate choppy (ranging) market conditions. Turn this off when you do not need the table; it avoids the additional statistics calculation.', group="01 • ML — GENERAL")
+showTradeStats = input.bool(true, 'Show Trade Stats', tooltip='Shows or hides the entire combined Trade Stats and Intraday Edge table. Displays the trade stats for a given configuration. Useful for optimizing the settings in the Feature Engineering section. This should NOT replace backtesting and should be used for calibration purposes only. Early Signal Flips represent instances where the model changes signals before 4 bars elapses; high values can indicate choppy (ranging) market conditions. Turn this off when you do not need the table; it avoids the additional statistics calculation.', group="01 • ML — GENERAL")
 useWorstCase = input.bool(false, "Use Worst Case Estimates", tooltip="Whether to use the worst case scenario for backtesting. This option can be useful for creating a conservative estimate that is based on close prices only, thus avoiding the effects of intrabar repainting. This option assumes that the user does not enter when the signal first appears and instead waits for the bar to close as confirmation. On larger timeframes, this can mean entering after a large move has already occurred. Leaving this option disabled is generally better for those that use this indicator as a source of confluence and prefer estimates that demonstrate discretionary mid-bar entries. Leaving this option enabled may be more consistent with traditional backtesting results.", group="01 • ML — GENERAL")
 
 // When enabled, this option allows the ML model to analyze the entire chart history for pattern recognition,
@@ -1917,7 +1917,6 @@ if barstate.islast
 //====================================================================
 
 groupDashboard = "17 • INTRADAY EDGE DASHBOARD"
-showIntradayDashboard = input.bool(true, "Show Intraday Edge Table", group = groupDashboard)
 dashboardPositionInput = input.string("Top Right", "Table Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = groupDashboard)
 dashboardTextSizeInput = input.string("Small", "Text Size", options = ["Tiny", "Small", "Normal"], group = groupDashboard)
 
@@ -1966,17 +1965,14 @@ backTestStream = switch
     endShortTrade => -2
 plot(backTestStream, "Backtest Stream", display=display.none)
 
-// One table keeps statistics, spacer, and dashboard aligned like the reference.
-int dashboardHeaderRow = showTradeStats ? 6 : 0
-int dashboardRowCount = (showTradeStats ? 5 : 0) + (showIntradayDashboard ? (showTradeStats ? 12 : 11) : 0)
-var table intradayDashboard = table.new(dashboardPosition, 2, math.max(dashboardRowCount, 1), frame_color = color.silver, frame_width = 1, border_width = 1, border_color = color.silver)
-if barstate.isfirst
-    if showTradeStats
-        table.merge_cells(intradayDashboard, 0, 0, 1, 0)
-    if showIntradayDashboard
-        if showTradeStats
-            table.merge_cells(intradayDashboard, 0, 5, 1, 5)
-        table.merge_cells(intradayDashboard, 0, dashboardHeaderRow, 1, dashboardHeaderRow)
+// Show Trade Stats controls the complete table; no table is created when off.
+int dashboardHeaderRow = 6
+var table intradayDashboard = na
+if barstate.isfirst and showTradeStats
+    intradayDashboard := table.new(dashboardPosition, 2, 17, frame_color = color.silver, frame_width = 1, border_width = 1, border_color = color.silver)
+    table.merge_cells(intradayDashboard, 0, 0, 1, 0)
+    table.merge_cells(intradayDashboard, 0, 5, 1, 5)
+    table.merge_cells(intradayDashboard, 0, dashboardHeaderRow, 1, dashboardHeaderRow)
 
 if showTradeStats
     [totalWins, totalLosses, totalEarlySignalFlips, totalTrades, tradeStatsHeader, winLossRatio, winRate] = ml.backtest(high, low, open, startLongTrade, endLongTrade, startShortTrade, endShortTrade, isEarlySignalFlip, maxBarsBackIndex, bar_index, mlSettings.source, useWorstCase)
@@ -1987,9 +1983,8 @@ if showTradeStats
         intradayDashboardRow(intradayDashboard, 3, "WL Ratio", totalLosses > 0 ? str.tostring(totalWins / totalLosses, "0.00") : "N/A", #009988)
         intradayDashboardRow(intradayDashboard, 4, "Early Signal Flips", str.tostring(totalEarlySignalFlips, "#"), color.orange)
 
-if barstate.islast and showIntradayDashboard
-    if showTradeStats
-        table.cell(intradayDashboard, 0, 5, "", height = 3, bgcolor = color.rgb(35, 35, 35))
+if barstate.islast and showTradeStats
+    table.cell(intradayDashboard, 0, 5, "", height = 3, bgcolor = color.rgb(35, 35, 35))
     table.cell(intradayDashboard, 0, dashboardHeaderRow, "INTRADAY EDGE", bgcolor = color.rgb(35, 35, 35), text_color = color.white, text_size = dashboardTextSize, text_halign = text.align_center)
     intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 1, "Trend", dashboardTrend == 1 ? "UPTREND 🟢" : dashboardTrend == -1 ? "DOWNTREND 🔴" : "NEUTRAL", dashboardTrend == 1 ? #009988 : dashboardTrend == -1 ? #CC3311 : color.orange)
     intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 2, "Bias", dashboardBias == 1 ? "BULLISH" : dashboardBias == -1 ? "BEARISH" : "NEUTRAL", dashboardBias == 1 ? #009988 : dashboardBias == -1 ? #CC3311 : color.orange)
@@ -2028,3 +2023,206 @@ if barstate.islast
          text_size=size.small,
          text_halign=text.align_center,
          bgcolor=color.new(color.black, 100))
+
+//====================================================================
+//================ MULTI-TIMEFRAME TREND / SIGNALS ====================
+//====================================================================
+// Calculations below use Intraday Edge's kernel and Lorentzian ML rules.
+groupMTF = "18 • MULTI-TIMEFRAME TREND / SIGNALS"
+showMTF = input.bool(true, "Show Multi-TF Table", group = groupMTF, tooltip = "Independent of Show Trade Stats. Runs the Intraday Edge model separately for each enabled timeframe. Disable unused timeframes if execution becomes slow.")
+mtfPositionInput = input.string("Bottom Right", "Table Position", options = ["Top Left", "Top Right", "Middle Left", "Middle Right", "Bottom Left", "Bottom Right"], group = groupMTF)
+mtfTextSizeInput = input.string("Small", "Text Size", options = ["Tiny", "Small", "Normal"], group = groupMTF)
+mtfShowAverage = input.bool(false, "Show Average Trend", group = groupMTF)
+mtfShow1 = input.bool(false, "1 Min", group = groupMTF, inline = "mtf1")
+mtfShow2 = input.bool(false, "2 Mins", group = groupMTF, inline = "mtf1")
+mtfShow3 = input.bool(false, "3 Mins", group = groupMTF, inline = "mtf1")
+mtfShow5 = input.bool(true, "5 Mins", group = groupMTF, inline = "mtf2")
+mtfShow10 = input.bool(false, "10 Mins", group = groupMTF, inline = "mtf2")
+mtfShow15 = input.bool(true, "15 Mins", group = groupMTF, inline = "mtf2")
+mtfShow30 = input.bool(true, "30 Mins", group = groupMTF, inline = "mtf3")
+mtfShow60 = input.bool(false, "1 Hour", group = groupMTF, inline = "mtf3")
+mtfShow120 = input.bool(false, "2 Hours", group = groupMTF, inline = "mtf3")
+mtfShow240 = input.bool(false, "4 Hours", group = groupMTF, inline = "mtf4")
+mtfShow360 = input.bool(false, "6 Hours", group = groupMTF, inline = "mtf4")
+mtfShow720 = input.bool(false, "12 Hours", group = groupMTF, inline = "mtf4")
+mtfShowD = input.bool(false, "1 Day", group = groupMTF, inline = "mtf5")
+mtfShowW = input.bool(false, "1 Week", group = groupMTF, inline = "mtf5")
+
+// All mutable model state is local to the requested context. Keep these rules
+// synchronized with the chart model: labels, history window, neighbor ordering,
+// modulo test, filters, signal-change entries, kernel and confidence bands.
+mtfModel() =>
+    float localSource = mlSettings.source
+    FeatureSeries localFeatures = FeatureSeries.new(
+         series_from(f1_string, close, high, low, hlc3, f1_paramA, f1_paramB),
+         series_from(f2_string, close, high, low, hlc3, f2_paramA, f2_paramB),
+         series_from(f3_string, close, high, low, hlc3, f3_paramA, f3_paramB),
+         series_from(f4_string, close, high, low, hlc3, f4_paramA, f4_paramB),
+         series_from(f5_string, close, high, low, hlc3, f5_paramA, f5_paramB))
+    var FeatureArrays localArrays = FeatureArrays.new(array.new_float(), array.new_float(), array.new_float(), array.new_float(), array.new_float())
+    array.push(localArrays.f1, localFeatures.f1)
+    array.push(localArrays.f2, localFeatures.f2)
+    array.push(localArrays.f3, localFeatures.f3)
+    array.push(localArrays.f4, localFeatures.f4)
+    array.push(localArrays.f5, localFeatures.f5)
+    var array<int> localLabels = array.new_int()
+    array.push(localLabels, localSource[4] < localSource ? -1 : localSource[4] > localSource ? 1 : 0)
+    var array<float> localVotes = array.new_float()
+    var array<float> localDistances = array.new_float()
+    var float localPrediction = 0.0
+    var int localSignal = 0
+    int localWindowStart = last_bar_index >= mlSettings.maxBarsBack ? last_bar_index - mlSettings.maxBarsBack : 0
+    int localStart = includeFullHistory ? 0 : localWindowStart
+    int localEnd = array.size(localLabels) - 1
+    float localLastDistance = -1.0
+    if bar_index >= localWindowStart and localStart <= localEnd
+        for i = localStart to localEnd
+            float localDistance = get_lorentzian_distance(i, mlSettings.featureCount, localFeatures, localArrays)
+            if localDistance >= localLastDistance and i % 4 != 0
+                localLastDistance := localDistance
+                array.push(localDistances, localDistance)
+                array.push(localVotes, math.round(array.get(localLabels, i)))
+                if array.size(localVotes) > mlSettings.neighborsCount
+                    localLastDistance := array.get(localDistances, math.round(mlSettings.neighborsCount * 3 / 4))
+                    array.shift(localDistances)
+                    array.shift(localVotes)
+        localPrediction := array.sum(localVotes)
+    bool localVolatility = ml.filter_volatility(1, 10, filterSettings.useVolatilityFilter)
+    bool localRegime = ml.regime_filter(ohlc4, filterSettings.regimeThreshold, filterSettings.useRegimeFilter)
+    bool localAdx = ml.filter_adx(localSource, 14, filterSettings.adxThreshold, filterSettings.useAdxFilter)
+    bool localFilters = localVolatility and localRegime and localAdx
+    localSignal := localPrediction > 0 and localFilters ? 1 : localPrediction < 0 and localFilters ? -1 : nz(localSignal[1])
+    bool localChanged = ta.change(localSignal) != 0
+    float localEma = ta.ema(close, emaPeriod)
+    float localSma = ta.sma(close, smaPeriod)
+    float localKernel = kernels.rationalQuadratic(localSource, h, r, x)
+    float localGaussian = kernels.gaussian(localSource, h - lag, x)
+    bool localKernelUp = useKernelSmoothing ? localGaussian >= localKernel : localKernel > localKernel[1]
+    bool localKernelDown = useKernelSmoothing ? localGaussian <= localKernel : localKernel < localKernel[1]
+    bool localBuy = localSignal == 1 and localChanged and (not useEmaFilter or close > localEma) and (not useSmaFilter or close > localSma) and (not useKernelFilter or localKernelUp)
+    bool localSell = localSignal == -1 and localChanged and (not useEmaFilter or close < localEma) and (not useSmaFilter or close < localSma) and (not useKernelFilter or localKernelDown)
+    bool localReady = not na(localKernel) and not na(localKernel[1]) and (not useKernelSmoothing or not na(localGaussian))
+    int localTrend = not localReady ? int(na) : useKernelSmoothing ? (localGaussian > localKernel ? 1 : localGaussian < localKernel ? -1 : 0) : (localKernelUp ? 1 : localKernelDown ? -1 : 0)
+    float localConfidence = math.abs(localPrediction) / mlSettings.neighborsCount
+    int localStrength = localConfidence >= 0.80 ? 3 : localConfidence >= 0.45 ? 2 : 1
+    var int localLastCode = 0
+    var int localLastSignalTime = na
+    var int localLastSignalBar = na
+    if localBuy or localSell
+        localLastCode := localBuy ? localStrength : -localStrength
+        localLastSignalTime := time
+        localLastSignalBar := bar_index
+    int localAge = na(localLastSignalBar) ? int(na) : bar_index - localLastSignalBar
+    [localTrend, localLastCode, localLastSignalTime, localAge, time_close]
+
+// Previous completed source bar + lookahead_on is the confirmed HTF path.
+mtfConfirmedModel() =>
+    [mt, mc, ms, ma, mz] = mtfModel()
+    [mt[1], mc[1], ms[1], ma[1], mz[1]]
+
+mtfCodeText(int code) =>
+    switch code
+        3 => "SB"
+        2 => "B"
+        1 => "BI"
+        -3 => "SS"
+        -2 => "S"
+        -1 => "SI"
+        => ""
+
+mtfPosition = switch mtfPositionInput
+    "Top Left" => position.top_left
+    "Top Right" => position.top_right
+    "Middle Left" => position.middle_left
+    "Middle Right" => position.middle_right
+    "Bottom Left" => position.bottom_left
+    => position.bottom_right
+// Avoid hiding either table if the user selects the same corner for both.
+mtfEffectivePosition = showTradeStats and mtfPosition == dashboardPosition ? (dashboardPosition == position.middle_left ? position.middle_right : position.middle_left) : mtfPosition
+mtfTextSize = mtfTextSizeInput == "Tiny" ? size.tiny : mtfTextSizeInput == "Normal" ? size.normal : size.small
+var array<string> mtfFrames = array.from("1", "2", "3", "5", "10", "15", "30", "60", "120", "240", "360", "720", "1D", "1W")
+var array<string> mtfNames = array.from("1 Min", "2 Mins", "3 Mins", "5 Mins", "10 Mins", "15 Mins", "30 Mins", "1H", "2H", "4H", "6H", "12H", "1D", "1W")
+var array<bool> mtfEnabled = array.from(mtfShow1, mtfShow2, mtfShow3, mtfShow5, mtfShow10, mtfShow15, mtfShow30, mtfShow60, mtfShow120, mtfShow240, mtfShow360, mtfShow720, mtfShowD, mtfShowW)
+// Cache the latest available completed intrabar when a lower-TF array is empty.
+var array<int> mtfTrends = array.new_int(14, na)
+var array<int> mtfCodes = array.new_int(14, 0)
+var array<int> mtfSignalTimes = array.new_int(14, na)
+var array<int> mtfAges = array.new_int(14, na)
+var array<int> mtfCloseTimes = array.new_int(14, na)
+var table mtfTable = na
+if barstate.isfirst and showMTF
+    mtfTable := table.new(mtfEffectivePosition, 16, 2, border_width = 1, border_color = color.gray)
+
+if showMTF
+    // Requests must run on history, not just on the last bar: ML has state.
+    for slot = 0 to 13
+        if array.get(mtfEnabled, slot)
+            string requestedTF = array.get(mtfFrames, slot)
+            if timeframe.in_seconds(requestedTF) < timeframe.in_seconds()
+                [trends, codes, stamps, ages, closes] = request.security_lower_tf(syminfo.tickerid, requestedTF, mtfModel())
+                int latest = array.size(closes) - 1
+                // Exclude a developing intrabar if the provider includes one.
+                while latest >= 0
+                    if array.get(closes, latest) <= timenow
+                        break
+                    latest -= 1
+                if latest >= 0
+                    array.set(mtfTrends, slot, array.get(trends, latest))
+                    array.set(mtfCodes, slot, array.get(codes, latest))
+                    array.set(mtfSignalTimes, slot, array.get(stamps, latest))
+                    array.set(mtfAges, slot, array.get(ages, latest))
+                    array.set(mtfCloseTimes, slot, array.get(closes, latest))
+            else if timeframe.in_seconds(requestedTF) == timeframe.in_seconds()
+                // Reuse chart values for exact same-timeframe badge agreement.
+                var int chartLastCode = 0
+                var int chartLastSignalTime = na
+                var int chartLastSignalBar = na
+                if barstate.isconfirmed
+                    if startLongTrade or startShortTrade
+                        chartLastCode := (startLongTrade ? 1 : -1) * (mlStrongSignal ? 3 : mlStandardSignal ? 2 : 1)
+                        chartLastSignalTime := time
+                        chartLastSignalBar := bar_index
+                    array.set(mtfTrends, slot, dashboardTrendReady ? dashboardTrend : int(na))
+                    array.set(mtfCodes, slot, chartLastCode)
+                    array.set(mtfSignalTimes, slot, chartLastSignalTime)
+                    array.set(mtfAges, slot, na(chartLastSignalBar) ? int(na) : bar_index - chartLastSignalBar)
+                    array.set(mtfCloseTimes, slot, time_close)
+            else
+                [trendValue, codeValue, signalTimeValue, ageValue, closeValue] = request.security(syminfo.tickerid, requestedTF, mtfConfirmedModel(), gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+                array.set(mtfTrends, slot, trendValue)
+                array.set(mtfCodes, slot, codeValue)
+                array.set(mtfSignalTimes, slot, signalTimeValue)
+                array.set(mtfAges, slot, ageValue)
+                array.set(mtfCloseTimes, slot, closeValue)
+    if barstate.islast
+        table.clear(mtfTable, 0, 0, 15, 1)
+        table.cell(mtfTable, 0, 0, "TF", bgcolor = color.rgb(35, 35, 35), text_color = color.white, text_size = mtfTextSize)
+        table.cell(mtfTable, 0, 1, "Trend/S", bgcolor = color.rgb(35, 35, 35), text_color = color.white, text_size = mtfTextSize, tooltip = "Confirmed source candles only. * = retained signal from an earlier candle; hover its cell for time and age. Trend may differ from the retained signal direction.")
+        int column = 1
+        int trendSum = 0
+        int trendCount = 0
+        for slot = 0 to 13
+            if array.get(mtfEnabled, slot)
+                int trendValue = array.get(mtfTrends, slot)
+                int codeValue = nz(array.get(mtfCodes, slot))
+                int signalTimeValue = array.get(mtfSignalTimes, slot)
+                int ageValue = array.get(mtfAges, slot)
+                int closeValue = array.get(mtfCloseTimes, slot)
+                string trendText = na(trendValue) ? "N/A" : trendValue > 0 ? "Up" : trendValue < 0 ? "Down" : "Flat"
+                string signalText = mtfCodeText(codeValue)
+                string cellText = trendText + (signalText == "" ? "" : "/" + signalText + (ageValue > 0 ? "*" : ""))
+                string cellTip = "Last evaluated candle closed: " + (na(closeValue) ? "Unavailable" : str.format_time(closeValue, "dd MMM HH:mm", syminfo.timezone)) + "\nLatest signal: " + (signalText == "" ? "None in available history" : signalText + " on candle opening " + str.format_time(signalTimeValue, "dd MMM yyyy HH:mm", syminfo.timezone) + " (" + str.tostring(ageValue) + " source bars ago)") + "\nTimezone: " + syminfo.timezone
+                color cellColor = na(trendValue) or trendValue == 0 ? color.rgb(65, 65, 65) : trendValue > 0 ? color.rgb(0, 110, 90) : color.rgb(150, 40, 40)
+                table.cell(mtfTable, column, 0, array.get(mtfNames, slot), bgcolor = color.rgb(35, 35, 35), text_color = color.white, text_size = mtfTextSize)
+                table.cell(mtfTable, column, 1, cellText, bgcolor = cellColor, text_color = color.white, text_size = mtfTextSize, tooltip = cellTip)
+                if not na(trendValue)
+                    trendSum += trendValue
+                    trendCount += 1
+                column += 1
+        if mtfShowAverage
+            float averageTrend = trendCount > 0 ? float(trendSum) / trendCount : na
+            string averageText = na(averageTrend) ? "N/A" : averageTrend >= 0.8 ? "Strong Up" : averageTrend >= 0.2 ? "Up" : averageTrend <= -0.8 ? "Strong Down" : averageTrend <= -0.2 ? "Down" : "Neutral"
+            table.cell(mtfTable, column, 0, "AVG", bgcolor = color.rgb(35, 35, 35), text_color = color.white, text_size = mtfTextSize)
+            table.cell(mtfTable, column, 1, averageText, bgcolor = color.rgb(65, 65, 65), text_color = color.white, text_size = mtfTextSize, tooltip = "Average confirmed kernel direction across enabled timeframes with data. No combined ML signal is inferred.")
+        if column == 1 and not mtfShowAverage
+            table.cell(mtfTable, 1, 0, "Select timeframes", text_color = color.white, bgcolor = color.rgb(65, 65, 65), text_size = mtfTextSize)
