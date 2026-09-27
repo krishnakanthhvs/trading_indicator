@@ -1939,19 +1939,25 @@ int dashboardBias = prediction > 0 ? 1 : prediction < 0 ? -1 : 0
 bool dashboardTrending = ml.regime_filter(ohlc4, filterSettings.regimeThreshold, true)
 float dashboardRelativeVolume = not na(smcAverageVolume) and smcAverageVolume > 0 ? volume / smcAverageVolume : na
 bool dashboardVolumeHigh = not na(dashboardRelativeVolume) and dashboardRelativeVolume >= smcVolumeMultiplier
-bool dashboardOpenAvailable = timeframe.isintraday and openPointSessionActive and not na(dailyOpen)
 bool dashboardORBAvailable = showORB and showIntradaySessionLevels and openPointSessionActive and orbLocked and not na(orbHigh) and not na(orbLow)
-// Six directional confirmations: ML vote, kernel, session open, structure,
-// opening-range breakout, and above-threshold volume. Unavailable items score 0.
-int dashboardStrength = dashboardBias == 0 ? 0 : 1 + (dashboardTrend == dashboardBias ? 1 : 0) + (dashboardOpenAvailable and (dashboardBias == 1 ? close > dailyOpen : close < dailyOpen) ? 1 : 0) + ((dashboardBias == 1 ? marketStructure == "BULL" : marketStructure == "BEAR") ? 1 : 0) + (dashboardORBAvailable and (dashboardBias == 1 ? close > orbHigh : close < orbLow) ? 1 : 0) + (dashboardVolumeHigh ? 1 : 0)
 bool dashboardLongSignal = startLongTrade and barstate.isconfirmed
 bool dashboardShortSignal = startShortTrade and barstate.isconfirmed
-string dashboardOption = dashboardLongSignal ? "LONG" : dashboardShortSignal ? "SHORT" : "WAIT"
-string dashboardSignal = dashboardLongSignal ? (mlStrongSignal ? "STRONG BUY" : mlStandardSignal ? "BUY" : "BUY IGNORE") : dashboardShortSignal ? (mlStrongSignal ? "STRONG SELL" : mlStandardSignal ? "SELL" : "SELL IGNORE") : "NO SIGNAL"
 string dashboardVolume = na(dashboardRelativeVolume) ? "N/A" : dashboardVolumeHigh ? "HIGH" : dashboardRelativeVolume < 0.8 ? "LOW" : "NORMAL"
 string dashboardLiquidity = bullLS ? "BULLISH SWEEP" : bearLS ? "BEARISH SWEEP" : "NONE"
 string dashboardORB = not dashboardORBAvailable ? "N/A" : close > orbHigh ? "ABOVE ORB" : close < orbLow ? "BELOW ORB" : "INSIDE ORB"
-string dashboardRisk = dashboardStrength >= 5 ? "LOW" : dashboardStrength >= 4 ? "MEDIUM" : "HIGH"
+
+// Retain confirmed entries across bars and sessions; previews never overwrite them.
+var string dashboardLastSignal = "NONE"
+var int dashboardLastSignalBar = na
+var int dashboardLastSignalTime = na
+var int dashboardLastSignalDirection = 0
+if dashboardLongSignal or dashboardShortSignal
+    dashboardLastSignal := dashboardLongSignal ? (mlStrongSignal ? "SB" : mlStandardSignal ? "B" : "BI") : (mlStrongSignal ? "SS" : mlStandardSignal ? "S" : "SI")
+    dashboardLastSignalBar := bar_index
+    dashboardLastSignalTime := time
+    dashboardLastSignalDirection := dashboardLongSignal ? 1 : -1
+int dashboardSignalAge = na(dashboardLastSignalBar) ? int(na) : bar_index - dashboardLastSignalBar
+string dashboardSignal = na(dashboardSignalAge) ? "NO SIGNAL" : dashboardLastSignal + " · " + (dashboardSignalAge == 0 ? "New" : str.tostring(dashboardSignalAge) + (dashboardSignalAge == 1 ? " bar ago" : " bars ago"))
 
 intradayDashboardRow(table panel, int row, string caption, string value, color valueColor) =>
     table.cell(panel, 0, row, caption, text_color = color.silver, bgcolor = color.rgb(65, 65, 65), text_size = dashboardTextSize, text_halign = text.align_center)
@@ -1965,14 +1971,12 @@ backTestStream = switch
     endShortTrade => -2
 plot(backTestStream, "Backtest Stream", display=display.none)
 
-// Show Trade Stats controls the complete table; no table is created when off.
-int dashboardHeaderRow = 6
+// One compact table, controlled entirely by Show Trade Stats.
+int dashboardRowCount = 9 + (showLS ? 1 : 0) + (showORB ? 1 : 0)
 var table intradayDashboard = na
 if barstate.isfirst and showTradeStats
-    intradayDashboard := table.new(dashboardPosition, 2, 17, frame_color = color.silver, frame_width = 1, border_width = 1, border_color = color.silver)
+    intradayDashboard := table.new(dashboardPosition, 2, dashboardRowCount, frame_color = color.silver, frame_width = 1, border_width = 1, border_color = color.silver)
     table.merge_cells(intradayDashboard, 0, 0, 1, 0)
-    table.merge_cells(intradayDashboard, 0, 5, 1, 5)
-    table.merge_cells(intradayDashboard, 0, dashboardHeaderRow, 1, dashboardHeaderRow)
 
 if showTradeStats
     [totalWins, totalLosses, totalEarlySignalFlips, totalTrades, tradeStatsHeader, winLossRatio, winRate] = ml.backtest(high, low, open, startLongTrade, endLongTrade, startShortTrade, endShortTrade, isEarlySignalFlip, maxBarsBackIndex, bar_index, mlSettings.source, useWorstCase)
@@ -1980,22 +1984,23 @@ if showTradeStats
         table.cell(intradayDashboard, 0, 0, "📈 Trade Stats", bgcolor = color.rgb(35, 35, 35), text_color = color.white, text_size = dashboardTextSize, text_halign = text.align_center)
         intradayDashboardRow(intradayDashboard, 1, "Winrate", totalTrades > 0 ? str.tostring(totalWins / totalTrades, "#.##%") : "0%", #009988)
         intradayDashboardRow(intradayDashboard, 2, "Trades", str.tostring(totalTrades, "#") + " (" + str.tostring(totalWins, "#") + "|" + str.tostring(totalLosses, "#") + ")", color.white)
-        intradayDashboardRow(intradayDashboard, 3, "WL Ratio", totalLosses > 0 ? str.tostring(totalWins / totalLosses, "0.00") : "N/A", #009988)
-        intradayDashboardRow(intradayDashboard, 4, "Early Signal Flips", str.tostring(totalEarlySignalFlips, "#"), color.orange)
+        // WL Ratio retained for reference. Allocate/reindex a row before restoring.
+        // intradayDashboardRow(intradayDashboard, 3, "WL Ratio", totalLosses > 0 ? str.tostring(totalWins / totalLosses, "0.00") : "N/A", #009988)
+        intradayDashboardRow(intradayDashboard, 3, "Early Signal Flips", str.tostring(totalEarlySignalFlips, "#"), color.orange)
 
 if barstate.islast and showTradeStats
-    table.cell(intradayDashboard, 0, 5, "", height = 3, bgcolor = color.rgb(35, 35, 35))
-    table.cell(intradayDashboard, 0, dashboardHeaderRow, "INTRADAY EDGE", bgcolor = color.rgb(35, 35, 35), text_color = color.white, text_size = dashboardTextSize, text_halign = text.align_center)
-    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 1, "Trend", dashboardTrend == 1 ? "UPTREND 🟢" : dashboardTrend == -1 ? "DOWNTREND 🔴" : "NEUTRAL", dashboardTrend == 1 ? #009988 : dashboardTrend == -1 ? #CC3311 : color.orange)
-    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 2, "Bias", dashboardBias == 1 ? "BULLISH" : dashboardBias == -1 ? "BEARISH" : "NEUTRAL", dashboardBias == 1 ? #009988 : dashboardBias == -1 ? #CC3311 : color.orange)
-    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 3, "Option", dashboardOption, dashboardLongSignal ? #009988 : dashboardShortSignal ? #CC3311 : color.orange)
-    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 4, "Signal", dashboardSignal, dashboardLongSignal ? #009988 : dashboardShortSignal ? #CC3311 : color.orange)
-    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 5, "Market", dashboardTrending ? "TRENDING" : "RANGING", dashboardTrending ? color.aqua : color.orange)
-    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 6, "Strength", str.tostring(dashboardStrength) + "/6", dashboardStrength >= 5 ? #009988 : color.yellow)
-    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 7, "Volume", dashboardVolume, color.white)
-    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 8, "Liquidity", dashboardLiquidity, bullLS ? #009988 : bearLS ? #CC3311 : color.white)
-    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 9, "ORB", dashboardORB, dashboardORBAvailable and close > orbHigh ? #009988 : dashboardORBAvailable and close < orbLow ? #CC3311 : color.orange)
-    intradayDashboardRow(intradayDashboard, dashboardHeaderRow + 10, "Risk", dashboardRisk, dashboardStrength >= 5 ? #009988 : dashboardStrength >= 4 ? color.orange : #CC3311)
+    intradayDashboardRow(intradayDashboard, 4, "Trend", dashboardTrend == 1 ? "UPTREND 🟢" : dashboardTrend == -1 ? "DOWNTREND 🔴" : "NEUTRAL", dashboardTrend == 1 ? #009988 : dashboardTrend == -1 ? #CC3311 : color.orange)
+    intradayDashboardRow(intradayDashboard, 5, "ML Bias", dashboardBias == 1 ? "BULLISH" : dashboardBias == -1 ? "BEARISH" : "NEUTRAL", dashboardBias == 1 ? #009988 : dashboardBias == -1 ? #CC3311 : color.orange)
+    intradayDashboardRow(intradayDashboard, 6, "Latest Signal", dashboardSignal, dashboardLastSignalDirection == 1 ? #009988 : dashboardLastSignalDirection == -1 ? #CC3311 : color.orange)
+    table.cell_set_tooltip(intradayDashboard, 1, 6, na(dashboardLastSignalTime) ? "No confirmed entry in the available model history." : "Latest confirmed " + dashboardLastSignal + " signal on candle opening " + str.format_time(dashboardLastSignalTime, "dd MMM yyyy HH:mm", syminfo.timezone) + " (" + syminfo.timezone + "). Age is measured in chart bars. Retained across sessions; not an active-position status.")
+    intradayDashboardRow(intradayDashboard, 7, "Market", dashboardTrending ? "TRENDING" : "RANGING", dashboardTrending ? color.aqua : color.orange)
+    intradayDashboardRow(intradayDashboard, 8, "Volume", dashboardVolume, color.white)
+    int nextDashboardRow = 9
+    if showLS
+        intradayDashboardRow(intradayDashboard, nextDashboardRow, "Liquidity", dashboardLiquidity, bullLS ? #009988 : bearLS ? #CC3311 : color.white)
+        nextDashboardRow += 1
+    if showORB
+        intradayDashboardRow(intradayDashboard, nextDashboardRow, "ORB", dashboardORB, dashboardORBAvailable and close > orbHigh ? #009988 : dashboardORBAvailable and close < orbLow ? #CC3311 : color.orange)
 
 //====================================================================
 //========================== DISCLAIMER ===============================
@@ -2226,3 +2231,133 @@ if showMTF
             table.cell(mtfTable, column, 1, averageText, bgcolor = color.rgb(65, 65, 65), text_color = color.white, text_size = mtfTextSize, tooltip = "Average confirmed kernel direction across enabled timeframes with data. No combined ML signal is inferred.")
         if column == 1 and not mtfShowAverage
             table.cell(mtfTable, 1, 0, "Select timeframes", text_color = color.white, bgcolor = color.rgb(65, 65, 65), text_size = mtfTextSize)
+
+//====================================================================
+//====================== PERIOD VWAP LINES ===========================
+//====================================================================
+groupPeriodVWAP = "19 • PERIOD VWAP LINES"
+showPeriodVWAP = input.bool(true, "Show Period VWAP Lines", group = groupPeriodVWAP, tooltip = "Volume-weighted price curves on the price chart, not raw volume totals. Each line resets at the start of its week, month, quarter or year.")
+periodVWAPSource = input.source(hlc3, "Price Source", group = groupPeriodVWAP)
+showWeeklyVWAP = input.bool(true, "Weekly (W)", group = groupPeriodVWAP, inline = "vwapW")
+weeklyVWAPColor = input.color(color.aqua, "Color", group = groupPeriodVWAP, inline = "vwapW")
+showMonthlyVWAP = input.bool(true, "Monthly (M)", group = groupPeriodVWAP, inline = "vwapM")
+monthlyVWAPColor = input.color(color.orange, "Color", group = groupPeriodVWAP, inline = "vwapM")
+showQuarterlyVWAP = input.bool(true, "Quarterly (Q)", group = groupPeriodVWAP, inline = "vwapQ")
+quarterlyVWAPColor = input.color(color.fuchsia, "Color", group = groupPeriodVWAP, inline = "vwapQ")
+showYearlyVWAP = input.bool(true, "Yearly (Y)", group = groupPeriodVWAP, inline = "vwapY")
+yearlyVWAPColor = input.color(color.blue, "Color", group = groupPeriodVWAP, inline = "vwapY")
+periodVWAPWidth = input.int(2, "Line Width", minval = 1, maxval = 5, group = groupPeriodVWAP)
+showPeriodVWAPLabels = input.bool(true, "Show W / M / Q / Y Labels", group = groupPeriodVWAP)
+showPeriodVWAPValues = input.bool(false, "Show Values", group = groupPeriodVWAP, tooltip = "Adds the VWAP price beside W/M/Q/Y and shows VWAP values on the price scale/status line. Off shows letters only.")
+
+// Chart-bar VWAP = sum(source * volume) / sum(volume) within each anchor.
+// Mark the first loaded period as partial; its earlier bars may be unavailable.
+// Skip unavailable bars, flag partial data, and recover when volume resumes.
+periodVWAPValue(string anchorTF) =>
+    bool newPeriod = timeframe.change(anchorTF)
+    var float weightedSum = 0.0
+    var float volumeSum = 0.0
+    var bool incompleteHistory = true
+    var bool missingData = false
+    if newPeriod or barstate.isfirst
+        weightedSum := 0.0
+        volumeSum := 0.0
+        missingData := false
+        incompleteHistory := barstate.isfirst
+    if na(volume) or volume < 0 or (volume > 0 and na(periodVWAPSource))
+        missingData := true
+    else if volume > 0
+        weightedSum += periodVWAPSource * volume
+        volumeSum += volume
+    float value = volumeSum > 0 ? weightedSum / volumeSum : na
+    [value, incompleteHistory or missingData]
+
+[weeklyVWAP, weeklyVWAPPartial] = periodVWAPValue("1W")
+[monthlyVWAP, monthlyVWAPPartial] = periodVWAPValue("1M")
+[quarterlyVWAP, quarterlyVWAPPartial] = periodVWAPValue("3M")
+[yearlyVWAP, yearlyVWAPPartial] = periodVWAPValue("12M")
+// Keep drawing points for the latest session only. VWAP accumulators above
+// retain their W/M/Q/Y anchors; clearing drawings does not reset their values.
+// Auto: preserve MCX/Indian equity sessions, but use exchange trading days
+// for other feeds (including TVC Brent CFDs). Crypto always gets a full day.
+// Explicit Open Point profiles remain honored for non-crypto instruments.
+bool periodVWAPCrypto = syminfo.type == "crypto"
+bool periodVWAPIndianMarket = syminfo.prefix == "MCX" or syminfo.prefix == "NSE" or syminfo.prefix == "BSE"
+bool periodVWAPExchangeDay = periodVWAPCrypto or (openPointSessionProfile == "Auto" and not periodVWAPIndianMarket)
+bool periodVWAPNewSession = not timeframe.isintraday or periodVWAPExchangeDay ? timeframe.change("1D") : isNewOpenPointSession
+bool periodVWAPInSession = not timeframe.isintraday or periodVWAPExchangeDay or isInOpenPointSession
+
+// Four polylines avoid spending the shared 500-line budget on every candle.
+// Rebuild only on the last bar; clearing points at session open removes history.
+drawLatestSessionVWAP(float value, color curveColor) =>
+    var array<chart.point> points = array.new<chart.point>()
+    var polyline curve = na
+    var float endpointValue = na
+    var int endpointTime = na
+    if periodVWAPNewSession or (periodVWAPInSession and na(value))
+        array.clear(points)
+        endpointValue := na
+        endpointTime := na
+    if periodVWAPInSession and not na(value)
+        array.push(points, chart.point.from_time(time, value))
+        endpointValue := value
+        endpointTime := na(time_close) ? time : time_close
+        // Pine limits a polyline to 10,000 points; retain recent session points.
+        if array.size(points) > 9999
+            array.shift(points)
+    if barstate.islast
+        polyline.delete(curve)
+        curve := na
+        if array.size(points) > 0
+            array<chart.point> drawPoints = array.copy(points)
+            // Give the first session candle a visible segment as it develops.
+            if not na(endpointTime) and not na(endpointValue)
+                array.push(drawPoints, chart.point.from_time(endpointTime, endpointValue))
+            if array.size(drawPoints) > 1
+                curve := polyline.new(drawPoints, curved = false, closed = false, xloc = xloc.bar_time, line_color = curveColor, line_width = periodVWAPWidth)
+    [endpointValue, endpointTime]
+
+float weeklyVWAPLine = showPeriodVWAP and showWeeklyVWAP and periodVWAPInSession and timeframe.in_seconds() < timeframe.in_seconds("1W") ? weeklyVWAP : na
+[weeklyVWAPEndpoint, weeklyVWAPEndpointTime] = drawLatestSessionVWAP(weeklyVWAPLine, weeklyVWAPColor)
+plot(weeklyVWAPLine, "Weekly VWAP (W)", color = weeklyVWAPColor, display = showPeriodVWAPValues ? display.price_scale + display.status_line + display.data_window : display.none)
+float monthlyVWAPLine = showPeriodVWAP and showMonthlyVWAP and periodVWAPInSession and timeframe.in_seconds() < timeframe.in_seconds("1M") ? monthlyVWAP : na
+[monthlyVWAPEndpoint, monthlyVWAPEndpointTime] = drawLatestSessionVWAP(monthlyVWAPLine, monthlyVWAPColor)
+plot(monthlyVWAPLine, "Monthly VWAP (M)", color = monthlyVWAPColor, display = showPeriodVWAPValues ? display.price_scale + display.status_line + display.data_window : display.none)
+float quarterlyVWAPLine = showPeriodVWAP and showQuarterlyVWAP and periodVWAPInSession and timeframe.in_seconds() < timeframe.in_seconds("3M") ? quarterlyVWAP : na
+[quarterlyVWAPEndpoint, quarterlyVWAPEndpointTime] = drawLatestSessionVWAP(quarterlyVWAPLine, quarterlyVWAPColor)
+plot(quarterlyVWAPLine, "Quarterly VWAP (Q)", color = quarterlyVWAPColor, display = showPeriodVWAPValues ? display.price_scale + display.status_line + display.data_window : display.none)
+float yearlyVWAPLine = showPeriodVWAP and showYearlyVWAP and periodVWAPInSession and timeframe.in_seconds() < timeframe.in_seconds("12M") ? yearlyVWAP : na
+[yearlyVWAPEndpoint, yearlyVWAPEndpointTime] = drawLatestSessionVWAP(yearlyVWAPLine, yearlyVWAPColor)
+plot(yearlyVWAPLine, "Yearly VWAP (Y)", color = yearlyVWAPColor, display = showPeriodVWAPValues ? display.price_scale + display.status_line + display.data_window : display.none)
+
+updatePeriodVWAPLabel(label currentLabel, float value, int endpointTime, string periodCode, color lineColor, bool partial) =>
+    label result = currentLabel
+    if showPeriodVWAPLabels and not na(value) and not na(endpointTime)
+        string labelText = periodCode + (showPeriodVWAPValues ? " (" + str.tostring(value, format.mintick) + ")" : "")
+        string labelTip = switch periodCode
+            "W" => "Weekly Volume"
+            "M" => "Monthly Volume"
+            "Q" => "Quarterly Volume"
+            "Y" => "Yearly Volume"
+            => "Volume"
+        if na(result)
+            result := label.new(endpointTime, value, labelText, xloc = xloc.bar_time, style = label.style_none, textcolor = lineColor, size = size.small, tooltip = labelTip)
+        else
+            label.set_xy(result, endpointTime, value)
+            label.set_text(result, labelText)
+            label.set_textcolor(result, lineColor)
+            label.set_tooltip(result, labelTip)
+    else
+        label.delete(result)
+        result := na
+    result
+
+var label weeklyVWAPLabel = na
+var label monthlyVWAPLabel = na
+var label quarterlyVWAPLabel = na
+var label yearlyVWAPLabel = na
+if barstate.islast
+    weeklyVWAPLabel := updatePeriodVWAPLabel(weeklyVWAPLabel, weeklyVWAPEndpoint, weeklyVWAPEndpointTime, "W", weeklyVWAPColor, weeklyVWAPPartial)
+    monthlyVWAPLabel := updatePeriodVWAPLabel(monthlyVWAPLabel, monthlyVWAPEndpoint, monthlyVWAPEndpointTime, "M", monthlyVWAPColor, monthlyVWAPPartial)
+    quarterlyVWAPLabel := updatePeriodVWAPLabel(quarterlyVWAPLabel, quarterlyVWAPEndpoint, quarterlyVWAPEndpointTime, "Q", quarterlyVWAPColor, quarterlyVWAPPartial)
+    yearlyVWAPLabel := updatePeriodVWAPLabel(yearlyVWAPLabel, yearlyVWAPEndpoint, yearlyVWAPEndpointTime, "Y", yearlyVWAPColor, yearlyVWAPPartial)

@@ -36,9 +36,10 @@ The script imports `jdehorty/MLExtensions/2` and `jdehorty/KernelFunctions/2`. T
 | Manual support/resistance | Nearest user-supplied price levels | Enabled |
 | ML bar colors | Optional prediction-based candle tint | Enabled |
 | ML trade statistics | Calibration table for ML entries and exits | Enabled |
-| Intraday Edge dashboard | Trend, bias, option, signal, market, strength, volume, liquidity, ORB, and risk | Enabled |
+| Intraday Edge dashboard | Trend, ML bias, latest signal with age, market, volume, and enabled liquidity/ORB context | Enabled |
 | Multi-TF table | Confirmed trend and latest ML signal per selected timeframe | Enabled; 5, 15, 30 minutes |
 | Alerts | Eight ML entry, exit, and kernel conditions | Available |
+| Period VWAP lines | Weekly, monthly, quarterly, and yearly volume-weighted price curves | Enabled |
 | Disclaimer watermark | Analysis-only notice at the bottom of the chart | Enabled |
 
 ## ML model and filters
@@ -293,27 +294,18 @@ The badge timing setting does **not** gate the alert conditions. Use a bar-close
 
 There are no dedicated alert conditions for target/stop touches, ORB breaks, BOS/CHoCH, sweeps, order blocks, candle patterns, or manual levels in this version.
 
-## Intraday Edge dashboard
+## Combined statistics and dashboard
 
-The main table follows the supplied reference layout: **📈 Trade Stats**, Winrate, Trades, WL Ratio, Early Signal Flips, a blank separator, then **INTRADAY EDGE** with these rows in order:
+**Show Trade Stats** controls a single compact table with one **📈 Trade Stats** heading and no separate Intraday Edge title or blank separator. Position and text size remain under **17 • INTRADAY EDGE DASHBOARD**.
 
-**Trend, Bias, Option, Signal, Market, Strength, Volume, Liquidity, ORB, Risk.**
+Rows are **Winrate, Trades, Early Signal Flips, Trend, ML Bias, Latest Signal, Market, and Volume**. **Liquidity** appears only when Enable Liquidity Sweep is on; **ORB** appears only when Enable ORB is on. Option, Strength, and Risk have been removed. The WL Ratio display code is commented out for reference.
 
-Both sections are enabled by default. The table uses grey cells, dark headers, light borders, centered text, and colored status values. The dashboard settings offer four corner positions and three text sizes. **Show Trade Stats** controls the entire combined table: turning it off hides both sections. The separate Show Intraday Edge Table toggle has been removed. Entry, SL, and target prices are not included in the table; the chart trade-plan feature remains separately configurable.
+- Trend follows the kernel direction; ML Bias follows the sign of ML votes.
+- Latest Signal retains the most recent confirmed **SB/B/BI/SS/S/SI** across candles and sessions. It shows **New** on the signal candle and its age in chart bars afterward, e.g. `SS · 3 bars ago`. Hover for the candle's opening date/time and exchange timezone. Previews do not replace it. This is not an active-position status; an ML exit does not erase the last entry.
+- Market uses the regime classification independently of its entry-filter toggle. Volume compares current volume with the SMC volume average.
+- Liquidity shows the current enabled sweep event. ORB shows price relative to the available opening range.
 
-The screenshot establishes appearance but does not provide the old formulas. The reconstructed display uses these definitions:
-
-- **Trend:** kernel direction, with the existing smoothing setting.
-- **Bias:** direction of the current ML vote total.
-- **Option / Signal:** LONG or SHORT and the signal category on a confirmed entry candle; otherwise WAIT / NO SIGNAL.
-- **Market:** the regime filter evaluated independently of its entry-filter toggle.
-- **Strength:** one point each for directional ML votes, aligned kernel, aligned session open, aligned market structure, aligned ORB breakout, and volume meeting the SMC multiplier. Missing confirmations score zero, for a total of 0–6.
-- **Volume:** HIGH at the SMC volume multiplier, LOW below 0.8 times average, otherwise NORMAL; N/A when unavailable.
-- **Liquidity:** the existing enabled liquidity-sweep module's current bullish/bearish event, otherwise NONE.
-- **ORB:** ABOVE ORB, BELOW ORB, or INSIDE ORB when the range is available; otherwise N/A.
-- **Risk:** LOW for strength 5–6, MEDIUM for 4, HIGH for 0–3. This is a display category, not a measured loss probability.
-
-Values update with the chart and can change intrabar. These summary calculations do not change entry signals, alerts, or trade plans. Numeric values are live calculations rather than the fixed numbers in the reference image.
+These rows summarize existing calculations without changing entry signals, alerts, or trade plans.
 
 ## Multi-timeframe trend and signals
 
@@ -342,9 +334,25 @@ The layout and average-trend concept are inspired by the user-supplied **Ox_kali
 
 Confirmed higher-timeframe requests and lower-timeframe intrabar arrays follow [TradingView's timeframe documentation](https://www.tradingview.com/pine-script-docs/concepts/other-timeframes-and-data/).
 
+## Weekly, monthly, quarterly, and yearly VWAP lines
+
+**19 • PERIOD VWAP LINES** replaces the former volume table with four price-chart curves: **W, M, Q, and Y**. Each is an anchored volume-weighted average price, calculated as `sum(source × volume) / sum(volume)` from chart bars since the anchor reset. The default source is HLC3.
+
+- Weekly resets each exchange week; monthly each month; quarterly each three-month period; yearly each year.
+- A master on/off switch and individual W/M/Q/Y toggles control the lines. Colors, width, source, and endpoint labels are configurable.
+- Labels are plain W/M/Q/Y text in the line color, without filled badges. Hover text expands each letter to Weekly Volume, Monthly Volume, Quarterly Volume, or Yearly Volume. **Show Values** is off by default; enable it for labels such as `M (23455.65)` and VWAP values on the price scale/status line. Label visibility is controlled separately.
+- On intraday charts, drawings restart at the session opening without connecting across sessions. Auto uses the configured Indian-market session for MCX/NSE/BSE and exchange daily boundaries for other feeds, including TVC Brent CFDs. Crypto uses a full exchange day regardless of the Open Point profile. Explicit Open Point profiles remain honored for non-crypto symbols. Opening-candle values are retained. The weekly/monthly/quarterly/yearly calculations keep their original anchors; they do not reset daily. Labels use the same retained endpoint as their curves, including after session close. Only the latest session’s curves are retained; all earlier session drawings are removed when a new session starts. After close, the latest completed session remains until the next one begins. On daily or higher charts, only the latest chart candle is drawn. Curves extend through the latest candle’s closing time, without forecasting later candles. Each curve retains up to 9,999 points from the latest session.
+- The first loaded period can lack its earlier candles. Calculations for that first period remain partial until a subsequent anchor reset is observed. Load more history to cover the desired anchor.
+- Missing/invalid-volume bars and missing prices on positive-volume bars are skipped; calculations resume when valid data returns. Totals can therefore be partial. Zero-volume bars add no weight. A feed with no usable volume produces no curve; no proxy volume is substituted.
+- Anchors equal to or below the chart timeframe are hidden because they cannot form a meaningful multi-bar curve. For example, a weekly chart hides W while M/Q/Y remain eligible.
+- Calculations use chart bars and may differ across chart timeframes, especially when a bar straddles a calendar boundary. Developing-bar prices update intrabar.
+- These are visual references only and do not filter ML signals, change trade plans, or generate alerts. There is no period-volume table or additional data request.
+
+This implements standard [anchored VWAP](https://www.tradingview.com/support/solutions/43000502018-volume-weighted-average-price-vwap/). The supplied sketch illustrates placement; it does not establish the formula used by another indicator.
+
 ## Statistics and backtest output
 
-Enable **Show Trade Stats** to display an ML calibration table containing win rate, total trades with wins/losses, win/loss count ratio, and early signal flips. An early flip is a model direction change before the four-bar holding period completes.
+Enable **Show Trade Stats** to display an ML calibration table containing win rate, total trades with wins/losses, and early signal flips. An early flip is a model direction change before the four-bar holding period completes.
 
 **Use Worst Case Estimates** requests close-based estimates from the library's backtest helper. The panel describes ML entries/exits only; it does not evaluate the visual trade plan's next-open entries, targets, stops, or optional reference overlays.
 
