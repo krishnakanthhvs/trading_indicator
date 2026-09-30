@@ -612,29 +612,21 @@ bool showLevel4     = pivotTypeInput != "DM" and pivotTypeInput != "Fibonacci"
 bool showLevel5     = pivotTypeInput == "Traditional" or pivotTypeInput == "Camarilla"
 
 string GRP02          = "7.3 • PIVOT POINTS — LEVELS"
+color pivotSupportColor = input.color(SUPPORT_COLOR, "Support Color (S1-S5)", group = GRP02, display = DW)
+color pivotResistanceColor = input.color(RESISTANCE_COLOR, "Resistance Color (R1-R5)", group = GRP02, display = DW)
 int linewidthInput    = input.int(1, "Line width", 1, 100, group = GRP02, display = DW)
 color pColorInput     = input.color(DEFAULT_COLOR, "P", inline = "10", group = GRP02, display = DW)
 bool pShowInput       = input.bool(true, "", inline = "10", group = GRP02, display = DW)
-color s1ColorInput    = input.color(SUPPORT_COLOR, "S1", inline = "02", group = GRP02, display = DW)
-bool s1ShowInput      = input.bool(true, "", inline = "02", group = GRP02, display = DW)
-color r1ColorInput    = input.color(RESISTANCE_COLOR, "R1", inline = "02", group = GRP02, display = DW)
-bool r1ShowInput      = input.bool(true, "", inline = "02", group = GRP02, display = DW)
-color s2ColorInput    = input.color(SUPPORT_COLOR, "S2", inline = "03", group = GRP02, display = DW, active = showLevel2and3)
-bool s2ShowInput      = input.bool(true, "", inline = "03", group = GRP02, display = DW, active = showLevel2and3)
-color r2ColorInput    = input.color(RESISTANCE_COLOR, "R2", inline = "03", group = GRP02, display = DW, active = showLevel2and3)
-bool r2ShowInput      = input.bool(true, "", inline = "03", group = GRP02, display = DW, active = showLevel2and3)
-color s3ColorInput    = input.color(SUPPORT_COLOR, "S3", inline = "04", group = GRP02, display = DW, active = showLevel2and3)
-bool s3ShowInput      = input.bool(true, "", inline = "04", group = GRP02, display = DW, active = showLevel2and3)
-color r3ColorInput    = input.color(RESISTANCE_COLOR, "R3", inline = "04", group = GRP02, display = DW, active = showLevel2and3)
-bool r3ShowInput      = input.bool(true, "", inline = "04", group = GRP02, display = DW, active = showLevel2and3)
-color s4ColorInput    = input.color(SUPPORT_COLOR, "S4", inline = "05", group = GRP02, display = DW, active = showLevel4)
-bool s4ShowInput      = input.bool(true, "", inline = "05", group = GRP02, display = DW, active = showLevel4)
-color r4ColorInput    = input.color(RESISTANCE_COLOR, "R4", inline = "05", group = GRP02, display = DW, active = showLevel4)
-bool r4ShowInput      = input.bool(true, "", inline = "05", group = GRP02, display = DW, active = showLevel4)
-color s5ColorInput    = input.color(SUPPORT_COLOR, "S5", inline = "06", group = GRP02, display = DW, active = showLevel5)
-bool s5ShowInput      = input.bool(true, "", inline = "06", group = GRP02, display = DW, active = showLevel5)
-color r5ColorInput    = input.color(RESISTANCE_COLOR, "R5", inline = "06", group = GRP02, display = DW, active = showLevel5)
-bool r5ShowInput      = input.bool(true, "", inline = "06", group = GRP02, display = DW, active = showLevel5)
+bool s1ShowInput      = input.bool(true, "S1", inline = "02", group = GRP02, display = DW)
+bool r1ShowInput      = input.bool(true, "R1", inline = "02", group = GRP02, display = DW)
+bool s2ShowInput      = input.bool(true, "S2", inline = "03", group = GRP02, display = DW, active = showLevel2and3)
+bool r2ShowInput      = input.bool(true, "R2", inline = "03", group = GRP02, display = DW, active = showLevel2and3)
+bool s3ShowInput      = input.bool(true, "S3", inline = "04", group = GRP02, display = DW, active = showLevel2and3)
+bool r3ShowInput      = input.bool(true, "R3", inline = "04", group = GRP02, display = DW, active = showLevel2and3)
+bool s4ShowInput      = input.bool(true, "S4", inline = "05", group = GRP02, display = DW, active = showLevel4)
+bool r4ShowInput      = input.bool(true, "R4", inline = "05", group = GRP02, display = DW, active = showLevel4)
+bool s5ShowInput      = input.bool(true, "S5", inline = "06", group = GRP02, display = DW, active = showLevel5)
+bool r5ShowInput      = input.bool(true, "R5", inline = "06", group = GRP02, display = DW, active = showLevel5)
 
 //====================================================================
 //====================== OPEN LEVEL SETTINGS ==========================
@@ -651,9 +643,9 @@ weeklyOpenColor = input.color(color.fuchsia,"Weekly Open Color", group=groupOpen
 openBullThreshold = input.float(10.0, "Bullish Threshold (pts)", minval=0, group=groupOpen)
 openBearThreshold = input.float(10.0, "Bearish Threshold (pts)", minval=0, group=groupOpen)
 
-openBullColor = input.color(color.lime, "Bullish Color", group=groupOpen)
-openBearColor = input.color(color.red, "Bearish Color", group=groupOpen)
-openNeutralColor = input.color(color.gray, "Neutral Color", group=groupOpen)
+openBullColor = color.lime
+openBearColor = color.red
+openNeutralColor = color.gray
 
 openLineWidth = input.int(2, "Line Width", minval=1, maxval=5, group=groupOpen)
 
@@ -688,11 +680,11 @@ type pivotGraphic
 
 var array<graphicSettings> graphicSettingsArray = array.from(
     graphicSettings.new(" P", pColorInput, pShowInput),
-    graphicSettings.new("R1", r1ColorInput, r1ShowInput), graphicSettings.new("S1", s1ColorInput, s1ShowInput),
-    graphicSettings.new("R2", r2ColorInput, r2ShowInput), graphicSettings.new("S2", s2ColorInput, s2ShowInput),
-    graphicSettings.new("R3", r3ColorInput, r3ShowInput), graphicSettings.new("S3", s3ColorInput, s3ShowInput),
-    graphicSettings.new("R4", r4ColorInput, r4ShowInput), graphicSettings.new("S4", s4ColorInput, s4ShowInput),
-    graphicSettings.new("R5", r5ColorInput, r5ShowInput), graphicSettings.new("S5", s5ColorInput, s5ShowInput)
+    graphicSettings.new("R1", pivotResistanceColor, r1ShowInput), graphicSettings.new("S1", pivotSupportColor, s1ShowInput),
+    graphicSettings.new("R2", pivotResistanceColor, r2ShowInput), graphicSettings.new("S2", pivotSupportColor, s2ShowInput),
+    graphicSettings.new("R3", pivotResistanceColor, r3ShowInput), graphicSettings.new("S3", pivotSupportColor, s3ShowInput),
+    graphicSettings.new("R4", pivotResistanceColor, r4ShowInput), graphicSettings.new("S4", pivotSupportColor, s4ShowInput),
+    graphicSettings.new("R5", pivotResistanceColor, r5ShowInput), graphicSettings.new("S5", pivotSupportColor, s5ShowInput)
 )
 
 var string autoAnchor = switch
@@ -1636,68 +1628,6 @@ if showOrderBlocks
             drawOrderBlock(selectedTFBearishZoneTime, selectedTFBearishZoneHigh, selectedTFBearishZoneLow, bearishOrderBlockColor, "Supply OB • " + orderBlockTimeframeLabel)
 
 //====================================================================
-//==================== CANDLE PATTERN LETTERS ========================
-//====================================================================
-
-groupCandlePatterns = "13 • OPTIONAL • PRICE ACTION — CANDLE PATTERNS"
-
-showCandlePatterns = input.bool(false, "Show Candle Pattern Letters", group = groupCandlePatterns, tooltip = "Optional educational labels. They do not change the ML signal or trade plan. Hover a letter to see the full pattern name.")
-showEngulfingPatterns = input.bool(true, "Engulfing", group = groupCandlePatterns, inline = "candleTypes", tooltip = "E = Bullish or Bearish Engulfing. The current body fully covers the previous candle's body.")
-showDarkCloudPattern = input.bool(true, "Dark Cloud Cover", group = groupCandlePatterns, inline = "candleTypes", tooltip = "C = Dark Cloud Cover, a bearish two-candle reversal pattern.")
-showInvertedHammerPattern = input.bool(true, "Inverted Hammer", group = groupCandlePatterns, inline = "candleTypes2", tooltip = "I = Inverted Hammer after price is below the slow EMA.")
-showShootingStarPattern = input.bool(true, "Shooting Star", group = groupCandlePatterns, inline = "candleTypes2", tooltip = "S = Shooting Star after price is above the slow EMA.")
-showMarubozuPattern = input.bool(true, "Marubozu", group = groupCandlePatterns, inline = "candleTypes2", tooltip = "M = a strong-bodied candle with very small wicks.")
-longWickToBody = input.float(2.0, "Long Wick / Body", minval = 1.0, maxval = 10.0, step = 0.25, group = groupCandlePatterns, tooltip = "Minimum upper-wick-to-body ratio for Inverted Hammer and Shooting Star patterns.")
-marubozuBodyPercent = input.float(90.0, "Marubozu Body %", minval = 70.0, maxval = 100.0, step = 1.0, group = groupCandlePatterns, tooltip = "Minimum percentage of a candle's range that must be body to qualify as a Marubozu.")
-candlePatternOffsetATR = input.float(0.10, "Letter Offset (ATR)", minval = 0.01, maxval = 1.00, step = 0.01, group = groupCandlePatterns, tooltip = "Distance of the pattern letter above or below its candle, measured in ATR.")
-maxCandlePatternLabels = input.int(50, "Historical Pattern Letters", minval = 10, maxval = 200, group = groupCandlePatterns, tooltip = "Maximum number of candle-pattern letters kept on the chart.")
-
-var array<label> candlePatternLabels = array.new<label>()
-float candlePatternAtr = ta.atr(14)
-float candlePatternTrendEma = ta.ema(close, 21)
-
-drawCandlePattern(bool bullishPattern, string patternLetter, string patternName) =>
-    float labelOffset = nz(candlePatternAtr, high - low) * candlePatternOffsetATR
-    float labelPrice = bullishPattern ? low - labelOffset : high + labelOffset
-    color patternColor = bullishPattern ? color.lime : color.red
-    label newPatternLabel = label.new(bar_index, labelPrice, patternLetter, xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, color = color.new(color.white, 100), textcolor = patternColor, size = size.small, tooltip = patternName)
-    array.push(candlePatternLabels, newPatternLabel)
-    if array.size(candlePatternLabels) > maxCandlePatternLabels
-        label.delete(array.shift(candlePatternLabels))
-
-float patternRange = high - low
-float patternBody = math.abs(close - open)
-float patternUpperWick = high - math.max(open, close)
-float patternLowerWick = math.min(open, close) - low
-bool hasPatternBody = patternRange > syminfo.mintick and patternBody >= syminfo.mintick
-bool longUpperWick = hasPatternBody and patternUpperWick >= patternBody * longWickToBody and patternLowerWick <= patternBody * 0.75
-
-bool invertedHammer = longUpperWick and close < candlePatternTrendEma
-bool shootingStar = longUpperWick and close > candlePatternTrendEma
-bool bullishMarubozu = patternRange > syminfo.mintick and close > open and patternBody / patternRange * 100 >= marubozuBodyPercent
-bool bearishMarubozu = patternRange > syminfo.mintick and close < open and patternBody / patternRange * 100 >= marubozuBodyPercent
-bool bullishEngulfing = bar_index > 0 and close > open and close[1] < open[1] and open <= close[1] and close >= open[1]
-bool bearishEngulfing = bar_index > 0 and close < open and close[1] > open[1] and open >= close[1] and close <= open[1]
-bool darkCloudCover = bar_index > 0 and close[1] > open[1] and close < open and open > open[1] and close < (open[1] + close[1]) / 2 and close > open[1]
-
-// One priority-selected annotation per confirmed candle keeps the chart legible.
-if showCandlePatterns and barstate.isconfirmed
-    if showDarkCloudPattern and darkCloudCover
-        drawCandlePattern(false, "C", "Dark Cloud Cover")
-    else if showEngulfingPatterns and bullishEngulfing
-        drawCandlePattern(true, "E", "Bullish Engulfing")
-    else if showEngulfingPatterns and bearishEngulfing
-        drawCandlePattern(false, "E", "Bearish Engulfing")
-    else if showInvertedHammerPattern and invertedHammer
-        drawCandlePattern(true, "I", "Inverted Hammer")
-    else if showShootingStarPattern and shootingStar
-        drawCandlePattern(false, "S", "Shooting Star")
-    else if showMarubozuPattern and bullishMarubozu
-        drawCandlePattern(true, "M", "Bullish Marubozu")
-    else if showMarubozuPattern and bearishMarubozu
-        drawCandlePattern(false, "M", "Bearish Marubozu")
-
-//====================================================================
 //====================== SIGNAL TRADE PLAN ===========================
 //====================================================================
 
@@ -2236,7 +2166,7 @@ if showMTF
 //====================== PERIOD VWAP LINES ===========================
 //====================================================================
 groupPeriodVWAP = "19 • PERIOD VWAP LINES"
-showPeriodVWAP = input.bool(true, "Show Period VWAP Lines", group = groupPeriodVWAP, tooltip = "Volume-weighted price curves on the price chart, not raw volume totals. Each line resets at the start of its week, month, quarter or year.")
+showPeriodVWAP = input.bool(false, "Show Period VWAP Lines", group = groupPeriodVWAP, tooltip = "Volume-weighted price curves on the price chart, not raw volume totals. Each line resets at the start of its week, month, quarter or year.")
 periodVWAPSource = input.source(hlc3, "Price Source", group = groupPeriodVWAP)
 showWeeklyVWAP = input.bool(true, "Weekly (W)", group = groupPeriodVWAP, inline = "vwapW")
 weeklyVWAPColor = input.color(color.aqua, "Color", group = groupPeriodVWAP, inline = "vwapW")

@@ -32,14 +32,13 @@ The script imports `jdehorty/MLExtensions/2` and `jdehorty/KernelFunctions/2`. T
 | BOS / CHoCH | Confirmed continuation and reversal structure breaks | Enabled |
 | Equal highs / lows | EQH and EQL liquidity references | Enabled |
 | Order blocks | Supply/demand zones from chart or selected timeframe | Enabled |
-| Candle patterns | Educational pattern letters with hover descriptions | Disabled |
 | Manual support/resistance | Nearest user-supplied price levels | Enabled |
 | ML bar colors | Optional prediction-based candle tint | Enabled |
 | ML trade statistics | Calibration table for ML entries and exits | Enabled |
 | Intraday Edge dashboard | Trend, ML bias, latest signal with age, market, volume, and enabled liquidity/ORB context | Enabled |
 | Multi-TF table | Confirmed trend and latest ML signal per selected timeframe | Enabled; 5, 15, 30 minutes |
 | Alerts | Eight ML entry, exit, and kernel conditions | Available |
-| Period VWAP lines | Weekly, monthly, quarterly, and yearly volume-weighted price curves | Enabled |
+| Period VWAP lines | Weekly, monthly, quarterly, and yearly volume-weighted price curves | Disabled |
 | Disclaimer watermark | Analysis-only notice at the bottom of the chart | Enabled |
 
 ## ML model and filters
@@ -76,7 +75,7 @@ Parameter B applies only where supported by the feature; the ADX helper uses Par
 | SMA | Off | Period 200; directional price filter |
 | Kernel | On | Directional kernel filter |
 
-Pivot points, opening levels, ORB, market structure, sweeps, candle patterns, order blocks, and manual levels are visual references. They do not add conditions to the ML entry model.
+Pivot points, opening levels, ORB, market structure, sweeps, order blocks, and manual levels are visual references. They do not add conditions to the ML entry model.
 
 ## Kernel regression and ML exits
 
@@ -144,7 +143,7 @@ Supported types are **Traditional, Fibonacci, Woodie, Classic, DM, and Camarilla
 - Anchors: Auto, Daily, Weekly, Monthly, Quarterly, Yearly, Biyearly, Triyearly, Quinquennially, and Decennially.
 - Auto uses daily pivots on intraday charts up to 15 minutes, weekly pivots on higher intraday charts, monthly pivots on daily charts, and yearly pivots otherwise.
 - Daily-based values are enabled by default; intraday-based values are also supported.
-- P and supported S1–S5/R1–R5 levels have individual visibility and color controls. Available levels depend on the calculation type.
+- P retains its own color; all S1–S5 levels share one Support Color and all R1–R5 levels share one Resistance Color. Each level retains its visibility control. Available levels depend on the calculation type.
 - Label names, prices, left/right placement, line width, and historical retention are configurable.
 
 Pivot calculation requires enough price history for the selected anchor. Daily-based and intraday-based calculations can differ when their source OHLC data differs.
@@ -169,7 +168,7 @@ The **Daily Open Point** captures the first available chart bar's open when a se
 
 The optional **Weekly Open** uses the weekly opening price. Its colors use configurable bullish/bearish point thresholds, both 10 points by default; prices inside that band use the neutral color. Those thresholds do not control Daily Open Point coloring.
 
-Both features provide label, value, color, and width controls. Session-only drawings are cleared after the configured close when the script evaluates the closed-session state.
+Both features provide label, value, and width controls. Bullish, bearish, and neutral colors are fixed to lime, red, and grey in code; At Open Color and Weekly Open Color remain configurable. Session-only drawings are cleared after the configured close when the script evaluates the closed-session state.
 
 Visibility rules:
 
@@ -243,22 +242,6 @@ A bullish structure break can create a demand zone from the most recent bearish 
 
 These are simplified chart-based zones, not exchange order-book data. Higher-timeframe requests use `lookahead_off`; this alone should not be interpreted as a blanket guarantee that developing higher-timeframe values cannot change.
 
-## Candle-pattern letters
-
-This optional module draws one priority-selected annotation per confirmed candle. Hovering a letter shows its full pattern name.
-
-| Letter | Pattern |
-| --- | --- |
-| E | Bullish or bearish Engulfing |
-| C | Dark Cloud Cover |
-| I | Inverted Hammer below the 21-period EMA |
-| S | Shooting Star above the 21-period EMA |
-| M | Bullish or bearish Marubozu |
-
-Each pattern family can be toggled. Defaults include a 2:1 minimum upper-wick/body ratio for hammer/star detection, a 90% minimum body percentage for Marubozu, 0.10 ATR label offset, and 50 retained letters.
-
-When multiple patterns qualify, priority is Dark Cloud Cover, Engulfing, Inverted Hammer, Shooting Star, then Marubozu. Pattern letters do not modify ML signals or trade plans.
-
 ## Manual support and resistance
 
 Enter price levels separated by commas or newlines. The source includes a preloaded Nifty-oriented list; replace it with levels appropriate to the chart. These values are static inputs, not automatically maintained market levels.
@@ -292,7 +275,7 @@ Alert messages include ticker, price, and chart interval and retain the source's
 
 The badge timing setting does **not** gate the alert conditions. Use a bar-close alert frequency when confirmed-close notifications are required. Hiding exit crosses or low-confidence badges does not disable the associated alert conditions.
 
-There are no dedicated alert conditions for target/stop touches, ORB breaks, BOS/CHoCH, sweeps, order blocks, candle patterns, or manual levels in this version.
+There are no dedicated alert conditions for target/stop touches, ORB breaks, BOS/CHoCH, sweeps, order blocks, or manual levels in this version.
 
 ## Combined statistics and dashboard
 
@@ -336,7 +319,7 @@ Confirmed higher-timeframe requests and lower-timeframe intrabar arrays follow [
 
 ## Weekly, monthly, quarterly, and yearly VWAP lines
 
-**19 • PERIOD VWAP LINES** replaces the former volume table with four price-chart curves: **W, M, Q, and Y**. Each is an anchored volume-weighted average price, calculated as `sum(source × volume) / sum(volume)` from chart bars since the anchor reset. The default source is HLC3.
+**Show Period VWAP Lines is off by default.** Enable it under **19 • PERIOD VWAP LINES**, which replaces the former volume table with four price-chart curves: **W, M, Q, and Y**. Each is an anchored volume-weighted average price, calculated as `sum(source × volume) / sum(volume)` from chart bars since the anchor reset. The default source is HLC3.
 
 - Weekly resets each exchange week; monthly each month; quarterly each three-month period; yearly each year.
 - A master on/off switch and individual W/M/Q/Y toggles control the lines. Colors, width, source, and endpoint labels are configurable.
