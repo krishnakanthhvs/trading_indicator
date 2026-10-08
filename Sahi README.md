@@ -19,12 +19,13 @@ Use **Intraday Edge Sahi.pine**. The original **Intraday Edge** and **README.md*
 - Moved all 12 input calls embedded in settings constructors into individual named assignments, as required by Sahi. Settings defaults remain the same.
 - Bounded the five feature arrays and label array to 10,000 bars in both chart and multi-timeframe models. Preserved their alignment and the original absolute-bar modulo sampling. **Include Retained History** now searches at most 10,000 loaded bars. The default recent-history search remains 2,000 bars.
 - Added valid minimum feature periods and bounded kernel parameters to prevent zero denominators and excessive history offsets. Defaults are unchanged.
-- Replaced dashboard emoji and target check marks with ordinary text/geometric symbols for Sahi's chart fonts.
-- Retained the original signal rules, confidence badges and previews, entries/exits, trade-plan drawings, pivots, session open levels, ORB, liquidity sweeps, BOS/CHoCH, equal levels, order blocks, manual levels, dashboard, multi-timeframe model, and period VWAP drawings.
+- Replaced dashboard emoji with ordinary text/geometric symbols for Sahi's chart fonts.
+- Removed section 14 and all its settings, calculations, drawing helpers, entry/stop/target lines, labels, and hit tracking at your request.
+- Retained the original signal rules, confidence badges and previews, entries/exits, pivots, session open levels, ORB, liquidity sweeps, BOS/CHoCH, equal levels, order blocks, manual levels, dashboard, multi-timeframe model, and period VWAP drawings.
 
 ## Differences and platform limits
 
-**Statistics:** The unavailable imported `ml.backtest` is replaced by local calibration counters. These count confirmed ML exits from a tracked entry, process exits before new entries on the same candle, exclude breakeven exits from win/loss totals, and count early signal flips separately. A new entry replaces a still-open entry. Price uses the original close-only option or `(high + low + 2 × open) / 4` estimate. These figures are not guaranteed to match the imported TradingView helper. They do not count the separate visual SL/TP touches, fees, slippage, or broker fills. Signals do not depend on these statistics.
+**Statistics:** The unavailable imported `ml.backtest` is replaced by local calibration counters. These count confirmed ML exits from a tracked entry, process exits before new entries on the same candle, exclude breakeven exits from win/loss totals, and count early signal flips separately. A new entry replaces a still-open entry. Price uses the original close-only option or `(high + low + 2 × open) / 4` estimate. These figures are not guaranteed to match the imported TradingView helper. They do not account for fees, slippage, or broker fills. Signals do not depend on these statistics.
 
 **Alerts:** Sahi's current FAQ says `alert()` and `alertcondition()` parse but do not send notifications. The eight original alert conditions remain in the source for future support; they currently do not provide Sahi notifications.
 
