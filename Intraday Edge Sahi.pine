@@ -2212,6 +2212,17 @@ mtfModel() =>
     int localAge = na(localLastSignalBar) ? int(na) : bar_index - localLastSignalBar
     [localTrend, localLastCode, localLastSignalTime, localAge, time_close]
 
+// Scalar request adapter: avoid a tuple of intrabar arrays in Sahi.
+// Each request evaluates the same model in its own source-timeframe context.
+mtfIntrabarComponent(simple int component) =>
+    [trend, code, stamp, age, closingTime] = mtfModel()
+    switch component
+        0 => trend
+        1 => code
+        2 => stamp
+        3 => age
+        => closingTime
+
 // Previous completed source bar + lookahead_on is the confirmed HTF path.
 mtfConfirmedModel() =>
     [mt, mc, ms, ma, mz] = mtfModel()
@@ -2256,8 +2267,15 @@ if showMTF
         if array.get(mtfEnabled, slot)
             string requestedTF = array.get(mtfFrames, slot)
             if timeframe.in_seconds(requestedTF) < timeframe.in_seconds()
-                [trends, codes, stamps, ages, closes] = request.security_lower_tf(syminfo.tickerid, requestedTF, mtfModel())
-                int latest = array.size(closes) - 1
+                // Separate scalar requests avoid Sahi's failing five-array tuple path.
+                trends = request.security_lower_tf(syminfo.tickerid, requestedTF, mtfIntrabarComponent(0))
+                codes = request.security_lower_tf(syminfo.tickerid, requestedTF, mtfIntrabarComponent(1))
+                stamps = request.security_lower_tf(syminfo.tickerid, requestedTF, mtfIntrabarComponent(2))
+                ages = request.security_lower_tf(syminfo.tickerid, requestedTF, mtfIntrabarComponent(3))
+                closes = request.security_lower_tf(syminfo.tickerid, requestedTF, mtfIntrabarComponent(4))
+                // Never index beyond any returned component, including on empty history.
+                int intrabarCount = math.min(array.size(trends), math.min(array.size(codes), math.min(array.size(stamps), math.min(array.size(ages), array.size(closes)))))
+                int latest = intrabarCount - 1
                 // Exclude a developing intrabar if the provider includes one.
                 while latest >= 0
                     if array.get(closes, latest) <= timenow
