@@ -23,7 +23,7 @@ The script imports `jdehorty/MLExtensions/2` and `jdehorty/KernelFunctions/2`. T
 | Signal preview | Live badge preview near candle close | 30 seconds |
 | Next-candle entry dot | Marks the next candle's opening price after a signal | Enabled |
 | Kernel regression | Trend estimate and optional signal filter | Enabled |
-| Trade plan | Entry, stop loss, and three risk-based targets | Enabled |
+| Trade plan | Entry, stop loss, and three risk-based targets | Disabled |
 | Pivot points | Six calculation types with configurable anchors and levels | Enabled |
 | Daily Open Point | Session opening-price reference | Enabled |
 | Weekly Open | Weekly opening-price reference | Disabled |
@@ -36,7 +36,7 @@ The script imports `jdehorty/MLExtensions/2` and `jdehorty/KernelFunctions/2`. T
 | ML bar colors | Optional prediction-based candle tint | Enabled |
 | ML trade statistics | Calibration table for ML entries and exits | Enabled |
 | Intraday Edge dashboard | Trend, ML bias, latest signal with age, market, volume, and enabled liquidity/ORB context | Enabled |
-| Multi-TF table | Confirmed trend and latest ML signal per selected timeframe | Enabled; 5, 15, 30 minutes |
+| Multi-TF table | Confirmed trend and latest ML signal per selected timeframe | Enabled; AVG, 5m, 15m, 1h, 1D |
 | Alerts | Eight ML entry, exit, and kernel conditions | Available |
 | Period VWAP lines | Weekly, monthly, quarterly, and yearly volume-weighted price curves | Disabled |
 | Disclaimer watermark | Analysis-only notice at the bottom of the chart | Enabled |
@@ -112,6 +112,8 @@ Strength measures model vote agreement, **not a probability of profit**. The sta
 Optional bar coloring offers Default and Solid schemes, confidence-gradient control, and color compression. These settings change presentation rather than signal logic.
 
 ## Signal trade plan
+
+Disabled by default; enable **Show Entry / SL / Targets** to display the plan.
 
 The latest confirmed ML entry signal creates a visual plan on the next candle:
 
@@ -224,7 +226,7 @@ Default confirmation settings:
 | Minimum body-to-range percentage | 55% |
 | Volume average length | 20 |
 
-Structure lines connect the swing level to the confirmed break candle, with optional centered labels. BOS/CHoCH visibility, bullish/bearish colors, style, width, and retained history are adjustable; the default is 25 structure lines.
+Structure lines connect the swing level to the confirmed break candle, with optional labels at the right endpoint. BOS/CHoCH visibility, bullish/bearish colors, style, width, and retained history are adjustable; the default is 25 structure lines.
 
 ### Equal highs and lows
 
@@ -279,7 +281,7 @@ There are no dedicated alert conditions for target/stop touches, ORB breaks, BOS
 
 ## Combined statistics and dashboard
 
-**Show Trade Stats** controls a single compact table with one **📈 Trade Stats** heading and no separate Intraday Edge title or blank separator. Position and text size remain under **17 • INTRADAY EDGE DASHBOARD**.
+**Show Trade Stats** controls a single compact table with one **📈 Trade Stats** heading and no separate Intraday Edge title or blank separator. Position and text size remain under **15 • INTRADAY EDGE DASHBOARD**.
 
 Rows are **Winrate, Trades, Early Signal Flips, Trend, ML Bias, Latest Signal, Market, and Volume**. **Liquidity** appears only when Enable Liquidity Sweep is on; **ORB** appears only when Enable ORB is on. Option, Strength, and Risk have been removed. The WL Ratio display code is commented out for reference.
 
@@ -292,15 +294,15 @@ These rows summarize existing calculations without changing entry signals, alert
 
 ## Multi-timeframe trend and signals
 
-**18 • MULTI-TIMEFRAME TREND / SIGNALS** adds an independent **Show Multi-TF Table** switch. It defaults to a horizontal table at the bottom right:
+**17 • MULTI-TIMEFRAME TREND / SIGNALS** adds an independent **Show Multi-TF Table** switch. It defaults to a horizontal table at the bottom right:
 
-| TF | 5 Mins | 15 Mins | 30 Mins |
-| --- | --- | --- | --- |
-| Trend/S | Down | Down/SS | Down/S* |
+| TF | 5 Mins | 15 Mins | 1 Hour | 1 Day | AVG |
+| --- | --- | --- | --- | --- | --- |
+| Trend/S | Down | Down/SS | Down/S* | Up | Down |
 
 This is an illustrative layout, not live market data. Each column evaluates Intraday Edge's own kernel trend and ML entry logic in its source timeframe. It uses the current feature, neighbor, history, filter, smoothing, and confidence settings. It does not substitute a moving-average crossover signal or add another candle-coloring layer.
 
-- Select any of 1, 2, 3, 5, 10, 15, or 30 minutes; 1, 2, 4, 6, or 12 hours; daily; and weekly. Only 5, 15, and 30 minutes are initially enabled.
+- Select any of 1, 2, 3, 5, 10, 15, or 30 minutes; 1, 2, 4, 6, or 12 hours; daily; and weekly. AVG, 5 minutes, 15 minutes, 1 hour, and 1 day are initially enabled.
 - Trend is **Up**, **Down**, or **Flat**. **N/A** means the requested context has insufficient available data.
 - Signal codes are the same **SB/B/BI/SS/S/SI** categories as chart badges. Hidden low-confidence chart badges do not suppress the table's underlying signals.
 - The latest confirmed entry signal is retained until replaced, including across sessions. **`*` means the signal belongs to an earlier source candle**. Hover to see the signal candle's opening date/time, its age in source bars, and the last evaluated candle's closing time, all in the exchange timezone. A retained signal is not a new entry or an active-position claim.
@@ -319,7 +321,7 @@ Confirmed higher-timeframe requests and lower-timeframe intrabar arrays follow [
 
 ## Weekly, monthly, quarterly, and yearly VWAP lines
 
-**Show Period VWAP Lines is off by default.** Enable it under **19 • PERIOD VWAP LINES**, which replaces the former volume table with four price-chart curves: **W, M, Q, and Y**. Each is an anchored volume-weighted average price, calculated as `sum(source × volume) / sum(volume)` from chart bars since the anchor reset. The default source is HLC3.
+**Show Period VWAP Lines is off by default.** Enable it under **18 • PERIOD VWAP LINES**, which replaces the former volume table with four price-chart curves: **W, M, Q, and Y**. Each is an anchored volume-weighted average price, calculated as `sum(source × volume) / sum(volume)` from chart bars since the anchor reset. The default source is HLC3.
 
 - Weekly resets each exchange week; monthly each month; quarterly each three-month period; yearly each year.
 - A master on/off switch and individual W/M/Q/Y toggles control the lines. Colors, width, source, and endpoint labels are configurable.
@@ -376,3 +378,7 @@ Preview signals can change before close, confirmed pivots need future bars to be
 The source credits **Krishna Kanth** and declares the **Mozilla Public License 2.0** in its header. Imported libraries are authored under the TradingView account **jdehorty** and retain their respective attribution and licensing terms.
 
 The configurable chart watermark reads: **FOR ANALYSIS PURPOSES ONLY - NOT A TRADING RECOMMENDATION**.
+
+## Default display settings
+
+Price Action Candle Patterns has been removed. Sections after SMC Zones & Liquidity are renumbered 13–19. Pivot S1–S5 share one Support Color, and R1–R5 share one Resistance Color; individual level visibility and the pivot P color remain configurable. Pivot labels default to the right; structure labels use the right endpoint and order-block text is right-aligned. Other price-level labels already use their right endpoints. Signal badges remain attached to their signal candles.

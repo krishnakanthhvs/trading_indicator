@@ -2,7 +2,7 @@
 // ©Krishna Kanth
 
 // @version=6
-indicator(title="Intraday Edge V2", shorttitle="IE v2.0", overlay=true, precision=4, max_lines_count=500, max_labels_count=500, max_boxes_count=50)
+indicator(title="Intraday Edge", shorttitle="Intraday Edge", overlay=true, precision=4, max_lines_count=500, max_labels_count=500, max_boxes_count=50)
 
 import jdehorty/MLExtensions/2 as ml
 import jdehorty/KernelFunctions/2 as kernels
@@ -602,7 +602,7 @@ bool isDailyBasedInput          = input.bool(true, "Use daily-based values", too
 string GRP01                    = "7.2 • PIVOT POINTS — LABELS"
 bool showLabelsInput            = input.bool(true, "Show labels", group = GRP01, display = DW)
 bool showPricesInput            = input.bool(true, "Show prices", group = GRP01, display = DW)
-string positionLabelsInput      = input.string("Left", "Label Side", options = ["Left", "Right"], group = GRP01, display = DW, active = showLabelsInput or showPricesInput)
+string positionLabelsInput      = input.string("Right", "Label Side", options = ["Left", "Right"], group = GRP01, display = DW, active = showLabelsInput or showPricesInput)
 
 color DEFAULT_COLOR      = #fb8c00
 color SUPPORT_COLOR      = color.red
@@ -643,9 +643,9 @@ weeklyOpenColor = input.color(color.fuchsia,"Weekly Open Color", group=groupOpen
 openBullThreshold = input.float(10.0, "Bullish Threshold (pts)", minval=0, group=groupOpen)
 openBearThreshold = input.float(10.0, "Bearish Threshold (pts)", minval=0, group=groupOpen)
 
-openBullColor = color.lime
-openBearColor = color.red
-openNeutralColor = color.gray
+openBullColor = input.color(color.lime, "Bullish Color", group=groupOpen)
+openBearColor = input.color(color.red, "Bearish Color", group=groupOpen)
+openNeutralColor = input.color(color.gray, "Neutral Color", group=groupOpen)
 
 openLineWidth = input.int(2, "Line Width", minval=1, maxval=5, group=groupOpen)
 
@@ -1330,7 +1330,7 @@ showStructureLabels = input.bool(
      true,
      "Show Line Labels",
      group = groupSMC,
-     tooltip = "Places BOS or CHoCH text in the middle of each structure line.")
+     tooltip = "Places BOS or CHoCH text at the right end of each structure line.")
 
 structureLineStyleInput = input.string(
      "Dashed",
@@ -1411,7 +1411,7 @@ var array<box> orderBlockBoxes = array.new<box>()
 var array<int> orderBlockCreationBars = array.new<int>()
 
 drawStructureLine(int startBar, float level, string structureText, color structureColor) =>
-    int labelBar = startBar + int(math.round((bar_index - startBar) / 2.0))
+    int labelBar = bar_index
     line newStructureLine = line.new(startBar, level, bar_index, level, xloc = xloc.bar_index, color = structureColor, style = structureLineStyle, width = structureLineWidth)
     label newStructureLabel = label.new(labelBar, level, showStructureLabels ? structureText : "", xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, textcolor = structureColor, size = size.tiny)
     array.push(structureLines, newStructureLine)
@@ -1430,7 +1430,7 @@ drawEqualLevel(int startBar, int endBar, float level, string levelText, color le
         label.delete(array.shift(equalLevelLabels))
 
 drawOrderBlock(int startTime, float zoneHigh, float zoneLow, color zoneColor, string zoneLabel) =>
-    box newOrderBlock = box.new(left = startTime, top = zoneHigh, right = time, bottom = zoneLow, xloc = xloc.bar_time, extend = extend.right, border_color = zoneColor, bgcolor = color.new(zoneColor, 86), text = zoneLabel, text_color = zoneColor, text_halign = text.align_left, text_valign = text.align_top, text_size = size.tiny)
+    box newOrderBlock = box.new(left = startTime, top = zoneHigh, right = time, bottom = zoneLow, xloc = xloc.bar_time, extend = extend.right, border_color = zoneColor, bgcolor = color.new(zoneColor, 86), text = zoneLabel, text_color = zoneColor, text_halign = text.align_right, text_valign = text.align_top, text_size = size.tiny)
     array.push(orderBlockBoxes, newOrderBlock)
     array.push(orderBlockCreationBars, bar_index)
     if array.size(orderBlockBoxes) > maxOrderBlocks
@@ -1520,10 +1520,14 @@ var float lastBullishOrderBlockHigh = na
 var float lastBullishOrderBlockLow = na
 var int lastBullishOrderBlockTime = na
 
+bool eqhAlertEvent = false
+bool eqlAlertEvent = false
+
 if not na(confirmedStructureHigh)
     int confirmedHighBar = bar_index - structureLength
     float equalLevelTolerance = nz(smcAtr[structureLength], smcAtr) * equalLevelToleranceATR
     if showEqualLevels and not na(equalHighReference) and math.abs(confirmedStructureHigh - equalHighReference) <= equalLevelTolerance
+        eqhAlertEvent := true
         drawEqualLevel(equalHighReferenceBar, confirmedHighBar, (confirmedStructureHigh + equalHighReference) / 2.0, "EQH", eqhColor)
     equalHighReference := confirmedStructureHigh
     equalHighReferenceBar := confirmedHighBar
@@ -1535,6 +1539,7 @@ if not na(confirmedStructureLow)
     int confirmedLowBar = bar_index - structureLength
     float equalLevelTolerance = nz(smcAtr[structureLength], smcAtr) * equalLevelToleranceATR
     if showEqualLevels and not na(equalLowReference) and math.abs(confirmedStructureLow - equalLowReference) <= equalLevelTolerance
+        eqlAlertEvent := true
         drawEqualLevel(equalLowReferenceBar, confirmedLowBar, (confirmedStructureLow + equalLowReference) / 2.0, "EQL", eqlColor)
     equalLowReference := confirmedStructureLow
     equalLowReferenceBar := confirmedLowBar
@@ -1631,8 +1636,8 @@ if showOrderBlocks
 //====================== SIGNAL TRADE PLAN ===========================
 //====================================================================
 
-groupTradePlan = "14 • SIGNAL TRADE PLAN"
-showSignalTradePlan = input.bool(true, "Show Entry / SL / Targets", group = groupTradePlan, tooltip = "Creates one trade plan from the latest confirmed SB, B, BI, SS, S, or SI signal. Entry is the next candle's open; a new signal replaces the previous plan.")
+groupTradePlan = "13 • SIGNAL TRADE PLAN"
+showSignalTradePlan = input.bool(false, "Show Entry / SL / Targets", group = groupTradePlan, tooltip = "Creates one trade plan from the latest confirmed SB, B, BI, SS, S, or SI signal. Entry is the next candle's open; a new signal replaces the previous plan.")
 tradePlanProjectionBars = input.int(24, "Line Length (Bars)", minval = 5, maxval = 200, group = groupTradePlan, tooltip = "How many chart bars the Entry, SL, and target lines extend. This prevents a completed plan from running across future sessions.")
 tradePlanLineStyle = input.string("Solid", "Line Style", options = ["Solid", "Dashed", "Dotted"], group = groupTradePlan, tooltip = "Visual style used for the Entry, Stop Loss, and target lines.")
 showTradePlanTargetTicks = input.bool(true, "Mark Reached Targets", group = groupTradePlan, tooltip = "Adds a check mark beside a reached target label and changes that label to grey.")
@@ -1770,7 +1775,7 @@ if showSignalTradePlan and tradePlanDirection != 0
 //================== MANUAL S/R PROXIMITY LEVELS =====================
 //====================================================================
 
-groupManualSR = "15 • MANUAL LEVELS"
+groupManualSR = "14 • MANUAL LEVELS"
 showManualSR = input.bool(true, "Enable Manual Levels", group = groupManualSR, tooltip = "Shows your closest manual levels above and below price. A level above price is labelled Resistance; after price moves above it, the same level automatically becomes Support.")
 manualLevelValues = input.text_area("18840.00, 21281.70, 21500.00, 21743.60\n21967.30, 22182.00, 22467.10, 22662.40\n22952.35, 23359.30, 23555.00, 23867.25\n24221.30, 24337.50, 24464.75, 24576.80\n24702.65, 25027.85, 25120.75, 25389.25\n25486.40, 25640.85, 25794.90, 26030.00\n26136.10, 26213.05, 26301.15, 26373.10", "Manual Levels", group = groupManualSR, tooltip = "All levels from your Nifty screenshot are preloaded in one list. Use one level per line or separate values with commas. The indicator decides whether each nearby level is Support or Resistance from the current price, so you never need to move a value between boxes. Do not use thousand separators: enter 24000, not 24,000.")
 manualLevelsPerSide = input.int(2, "Nearest Levels Per Side", minval = 1, maxval = 5, group = groupManualSR, tooltip = "Shows this many nearest levels below price as Support and above price as Resistance. Default: two Supports and two Resistances.")
@@ -1846,7 +1851,7 @@ if barstate.islast
 //==================== INTRADAY EDGE TABLE ============================
 //====================================================================
 
-groupDashboard = "17 • INTRADAY EDGE DASHBOARD"
+groupDashboard = "15 • INTRADAY EDGE DASHBOARD"
 dashboardPositionInput = input.string("Top Right", "Table Position", options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group = groupDashboard)
 dashboardTextSizeInput = input.string("Small", "Text Size", options = ["Tiny", "Small", "Normal"], group = groupDashboard)
 
@@ -1963,24 +1968,24 @@ if barstate.islast
 //================ MULTI-TIMEFRAME TREND / SIGNALS ====================
 //====================================================================
 // Calculations below use Intraday Edge's kernel and Lorentzian ML rules.
-groupMTF = "18 • MULTI-TIMEFRAME TREND / SIGNALS"
+groupMTF = "17 • MULTI-TIMEFRAME TREND / SIGNALS"
 showMTF = input.bool(true, "Show Multi-TF Table", group = groupMTF, tooltip = "Independent of Show Trade Stats. Runs the Intraday Edge model separately for each enabled timeframe. Disable unused timeframes if execution becomes slow.")
 mtfPositionInput = input.string("Bottom Right", "Table Position", options = ["Top Left", "Top Right", "Middle Left", "Middle Right", "Bottom Left", "Bottom Right"], group = groupMTF)
 mtfTextSizeInput = input.string("Small", "Text Size", options = ["Tiny", "Small", "Normal"], group = groupMTF)
-mtfShowAverage = input.bool(false, "Show Average Trend", group = groupMTF)
+mtfShowAverage = input.bool(true, "Show Average Trend", group = groupMTF)
 mtfShow1 = input.bool(false, "1 Min", group = groupMTF, inline = "mtf1")
 mtfShow2 = input.bool(false, "2 Mins", group = groupMTF, inline = "mtf1")
 mtfShow3 = input.bool(false, "3 Mins", group = groupMTF, inline = "mtf1")
 mtfShow5 = input.bool(true, "5 Mins", group = groupMTF, inline = "mtf2")
 mtfShow10 = input.bool(false, "10 Mins", group = groupMTF, inline = "mtf2")
 mtfShow15 = input.bool(true, "15 Mins", group = groupMTF, inline = "mtf2")
-mtfShow30 = input.bool(true, "30 Mins", group = groupMTF, inline = "mtf3")
-mtfShow60 = input.bool(false, "1 Hour", group = groupMTF, inline = "mtf3")
+mtfShow30 = input.bool(false, "30 Mins", group = groupMTF, inline = "mtf3")
+mtfShow60 = input.bool(true, "1 Hour", group = groupMTF, inline = "mtf3")
 mtfShow120 = input.bool(false, "2 Hours", group = groupMTF, inline = "mtf3")
 mtfShow240 = input.bool(false, "4 Hours", group = groupMTF, inline = "mtf4")
 mtfShow360 = input.bool(false, "6 Hours", group = groupMTF, inline = "mtf4")
 mtfShow720 = input.bool(false, "12 Hours", group = groupMTF, inline = "mtf4")
-mtfShowD = input.bool(false, "1 Day", group = groupMTF, inline = "mtf5")
+mtfShowD = input.bool(true, "1 Day", group = groupMTF, inline = "mtf5")
 mtfShowW = input.bool(false, "1 Week", group = groupMTF, inline = "mtf5")
 
 // All mutable model state is local to the requested context. Keep these rules
@@ -2165,7 +2170,7 @@ if showMTF
 //====================================================================
 //====================== PERIOD VWAP LINES ===========================
 //====================================================================
-groupPeriodVWAP = "19 • PERIOD VWAP LINES"
+groupPeriodVWAP = "18 • PERIOD VWAP LINES"
 showPeriodVWAP = input.bool(false, "Show Period VWAP Lines", group = groupPeriodVWAP, tooltip = "Volume-weighted price curves on the price chart, not raw volume totals. Each line resets at the start of its week, month, quarter or year.")
 periodVWAPSource = input.source(hlc3, "Price Source", group = groupPeriodVWAP)
 showWeeklyVWAP = input.bool(true, "Weekly (W)", group = groupPeriodVWAP, inline = "vwapW")
@@ -2291,3 +2296,224 @@ if barstate.islast
     monthlyVWAPLabel := updatePeriodVWAPLabel(monthlyVWAPLabel, monthlyVWAPEndpoint, monthlyVWAPEndpointTime, "M", monthlyVWAPColor, monthlyVWAPPartial)
     quarterlyVWAPLabel := updatePeriodVWAPLabel(quarterlyVWAPLabel, quarterlyVWAPEndpoint, quarterlyVWAPEndpointTime, "Q", quarterlyVWAPColor, quarterlyVWAPPartial)
     yearlyVWAPLabel := updatePeriodVWAPLabel(yearlyVWAPLabel, yearlyVWAPEndpoint, yearlyVWAPEndpointTime, "Y", yearlyVWAPColor, yearlyVWAPPartial)
+
+// Structure and liquidity alerts use the existing indicator event calculations.
+alertcondition(chochBull or chochBear, title="CHoCH", message="Intraday Edge CHoCH | {{ticker}} | {{interval}} | {{close}}")
+alertcondition(bullishBOS or bearishBOS, title="BOS", message="Intraday Edge BOS | {{ticker}} | {{interval}} | {{close}}")
+alertcondition(eqhAlertEvent, title="EQH", message="Intraday Edge EQH | {{ticker}} | {{interval}} | {{close}}")
+alertcondition(eqlAlertEvent, title="EQL", message="Intraday Edge EQL | {{ticker}} | {{interval}} | {{close}}")
+
+// Dynamic Telegram entries, fixed targets and target-based trailing stops.
+// Before TG1, exits use the signal candle extrema at a later candle open.
+// After TG1, revised stops trigger on the current live price.
+telegramStream = input.string("Buy / CE", "Telegram Entry / Exit Stream", options=["Buy / CE", "Sell / PE", "CHoCH", "BOS", "EQH", "EQL", "Daily Summary"], group="19 • TELEGRAM ALERTS")
+
+telegramEscape(string value) =>
+    string escaped = str.replace_all(value, "\\", "\\\\")
+    escaped := str.replace_all(escaped, "\"", "\\\"")
+    escaped := str.replace_all(escaped, "\n", "\\n")
+    escaped
+
+telegramTF() =>
+    timeframe.isminutes ? (timeframe.multiplier >= 60 and timeframe.multiplier % 60 == 0 ? str.tostring(timeframe.multiplier / 60, "#") + "h" : str.tostring(timeframe.multiplier) + "m") : timeframe.period
+
+telegramChatId() =>
+    switch
+        syminfo.prefix == "MCX" and str.contains(syminfo.ticker, "CRUDEOIL") => "-5422750210"
+        syminfo.ticker == "NIFTY" => "-5477119634"
+        syminfo.ticker == "SENSEX" => "-5465392888"
+        => ""
+
+telegramWrap(string messageText) =>
+    "{\"chat_id\":" + telegramChatId() + ",\"text\":\"" + telegramEscape(messageText) + "\"}"
+
+telegramPrice(float price) =>
+    na(price) ? "N/A" : str.tostring(price, format.mintick)
+
+telegramTime() =>
+    "\n\nTriggered At: " + str.format_time(timenow, "dd-MM-yyyy HH:mm", "Asia/Kolkata") + " IST"
+
+telegramSide(bool isCE) =>
+    isCE ? "CE 🟢" : "PE 🔴"
+
+telegramEntryPayload(bool isCE, float entryPrice, float stopPrice, float tg1, float tg2, float tg3) =>
+    string messageText = "🚀 ENTRY Alert\n\nSignal: " + telegramSide(isCE) + "\nTF: " + telegramTF()
+    messageText += "\n\nEntry Price: " + telegramPrice(entryPrice)
+    messageText += "\n\nTG1 / TG2 / TG3: " + telegramPrice(tg1) + " / " + telegramPrice(tg2) + " / " + telegramPrice(tg3)
+    messageText += "\n\nSL: " + telegramPrice(stopPrice)
+    if na(tg1)
+        messageText += "\nTargets unavailable: SL must be " + (isCE ? "below" : "above") + " the entry price."
+    telegramWrap(messageText + telegramTime())
+
+telegramExitStats(bool isCE, float entryPrice, float exitPrice, float tg1, float tg2, float tg3, bool hit1, bool hit2, bool hit3) =>
+    int reached = hit3 ? 3 : hit2 ? 2 : hit1 ? 1 : 0
+    float direction = isCE ? 1.0 : -1.0
+    float move = direction * (exitPrice - entryPrice)
+    float booked = (hit1 ? direction * (tg1 - entryPrice) : 0.0) + (hit2 ? direction * (tg2 - entryPrice) : 0.0) + (hit3 ? direction * (tg3 - entryPrice) : 0.0)
+    float net = (booked + (3 - reached) * move) / 3
+    string stats = "\n\nTargets Hit: " + str.tostring(reached) + " / 3"
+    if reached == 0
+        stats += "\n\nPoints " + (move >= 0 ? "Captured: " : "Lost: ") + (move >= 0 ? "+" : "-") + str.tostring(math.abs(move), "0.##") + " per lot on " + (syminfo.prefix == "MCX" ? "Underlying" : "Index")
+    else
+        stats += "\n\nTarget Points Captured: +" + str.tostring(booked, "0.##") + ""
+        if reached < 3
+            stats += "\n\nExit Move (" + str.tostring(3 - reached) + " remaining lots): " + (move >= 0 ? "+" : "-") + str.tostring(math.abs(move), "0.##") + " points per lot on " + (syminfo.prefix == "MCX" ? "Underlying" : "Index")
+        stats += "\n\nNet Points " + (net >= 0 ? "Captured: " : "Lost: ") + (net >= 0 ? "+" : "-") + str.tostring(math.abs(net), "0.##") + " per lot on " + (syminfo.prefix == "MCX" ? "Underlying" : "Index") + ""
+    stats + "\n" + (syminfo.prefix == "MCX" ? "Underlying Based" : "Index Based")
+
+telegramExitPayload(bool isCE, float entryPrice, float exitPrice, float exitReference, float entryStop, string exitStats) =>
+    // Only label an exit 'SL hit' if its open also crosses the SL shown at entry.
+    // The independently requested exit trigger remains the signal-candle rule.
+    bool entrySLHit = not na(entryStop) and (isCE ? exitPrice <= entryStop : exitPrice >= entryStop)
+    string messageText = "🚪 " + (isCE ? "CE Exit Alert 🟢" : "PE Exit Alert 🛑") + "\n\nSignal: Exit " + (isCE ? "CE" : "PE") + (entrySLHit ? " / SL hit 🛑" : " 🛑")
+    messageText += "\nTF: " + telegramTF()
+    messageText += "\n\nEntry Price: " + telegramPrice(entryPrice)
+    messageText += "\n\nExit Price: " + telegramPrice(exitPrice)
+    messageText += "\n\nExit: Opened " + (isCE ? "at or below the signal candle low (" : "at or above the signal candle high (") + telegramPrice(exitReference) + ")"
+    telegramWrap(messageText + exitStats + telegramTime())
+
+telegramTrailingExitPayload(bool isCE, float entryPrice, float exitPrice, float stopPrice, string exitStats) =>
+    string messageText = "🚪 " + (isCE ? "CE Exit Alert 🟢" : "PE Exit Alert 🛑") + "\n\nSignal: Exit " + (isCE ? "CE" : "PE") + " / SL hit 🛑"
+    messageText += "\nTF: " + telegramTF()
+    messageText += "\n\nEntry Price: " + telegramPrice(entryPrice)
+    messageText += "\n\nExit Price: " + telegramPrice(exitPrice)
+    messageText += "\n\nExit: Spot touched or crossed the revised SL (" + telegramPrice(stopPrice) + ")"
+    telegramWrap(messageText + exitStats + telegramTime())
+
+telegramTargetPayload(bool isCE, float entryPrice, float stopPrice, float tg1, float tg2, float tg3, bool hit1, bool hit2, bool hit3) =>
+    string messageText = "🎯 TARGET HIT Alert\n\nSignal: " + telegramSide(isCE) + "\nTF: " + telegramTF()
+    messageText += "\n\nEntry Price: " + telegramPrice(entryPrice)
+    if hit1
+        messageText += "\nTG1 hit ✅: " + telegramPrice(tg1)
+    if hit2
+        messageText += "\nTG2 hit ✅: " + telegramPrice(tg2)
+    if hit3
+        messageText += "\nTG3 hit ✅: " + telegramPrice(tg3)
+    if hit3
+        messageText += "\n\nRemaining Targets: 0\nAll three targets hit ✅"
+    else if hit2
+        messageText += "\n\nRemaining Targets: 1\nTG3: " + telegramPrice(tg3)
+    else
+        messageText += "\n\nRemaining Targets: 2\nTG2: " + telegramPrice(tg2) + "\nTG3: " + telegramPrice(tg3)
+    messageText += "\n\nUpdated SL: " + telegramPrice(stopPrice)
+    telegramWrap(messageText + telegramTime())
+
+varip bool telegramActive = false
+varip int telegramSignalBar = na
+varip int telegramLastEntryBar = na
+varip int telegramLastOpenCheckBar = na
+varip float telegramEntry = na
+varip float telegramEntrySL = na
+varip float telegramSignalOpen = na
+varip float telegramCurrentSL = na
+varip bool telegramTrailingActive = false
+varip float telegramTG1 = na
+varip float telegramTG2 = na
+varip float telegramTG3 = na
+varip bool telegramTG1Hit = false
+varip bool telegramTG2Hit = false
+varip bool telegramTG3Hit = false
+varip float telegramSignalLow = na
+varip float telegramSignalHigh = na
+bool telegramIsCE = telegramStream == "Buy / CE"
+
+if barstate.isrealtime and (telegramStream == "Buy / CE" or telegramStream == "Sell / PE") and telegramChatId() != ""
+    if telegramActive and bar_index == telegramSignalBar
+        telegramSignalLow := low
+        telegramSignalHigh := high
+    if telegramActive and bar_index == telegramSignalBar + 1
+        telegramSignalLow := low[1]
+        telegramSignalHigh := high[1]
+
+    // Opening-price exits take priority over targets on a new candle.
+    if na(telegramLastOpenCheckBar) or telegramLastOpenCheckBar != bar_index
+        telegramLastOpenCheckBar := bar_index
+        bool exitAtOpen = telegramActive and not telegramTrailingActive and bar_index > telegramSignalBar and (telegramIsCE ? open <= telegramSignalLow : open >= telegramSignalHigh)
+        if exitAtOpen
+            float exitReference = telegramIsCE ? telegramSignalLow : telegramSignalHigh
+            alert(telegramExitPayload(telegramIsCE, telegramEntry, open, exitReference, telegramEntrySL, telegramExitStats(telegramIsCE, telegramEntry, open, telegramTG1, telegramTG2, telegramTG3, telegramTG1Hit, telegramTG2Hit, telegramTG3Hit)), alert.freq_all)
+            telegramActive := false
+
+    // Check an already-revised stop before processing any further targets.
+    // Use only current live price: earlier bar wicks may predate the revision.
+    if telegramActive and telegramTrailingActive and (telegramIsCE ? close <= telegramCurrentSL : close >= telegramCurrentSL)
+        alert(telegramTrailingExitPayload(telegramIsCE, telegramEntry, close, telegramCurrentSL, telegramExitStats(telegramIsCE, telegramEntry, close, telegramTG1, telegramTG2, telegramTG3, telegramTG1Hit, telegramTG2Hit, telegramTG3Hit)), alert.freq_all)
+        telegramActive := false
+
+    // A signal candle's earlier wick must not count as a post-entry target hit.
+    // Use live price on that candle, and the full range only on later candles.
+    if telegramActive and not na(telegramTG1)
+        float targetPrice = bar_index == telegramSignalBar ? close : (telegramIsCE ? high : low)
+        bool hit1 = not telegramTG1Hit and (telegramIsCE ? targetPrice >= telegramTG1 : targetPrice <= telegramTG1)
+        bool hit2 = not telegramTG2Hit and (telegramIsCE ? targetPrice >= telegramTG2 : targetPrice <= telegramTG2)
+        bool hit3 = not telegramTG3Hit and (telegramIsCE ? targetPrice >= telegramTG3 : targetPrice <= telegramTG3)
+        if hit1 or hit2 or hit3
+            // A gap across multiple targets applies the highest reached step.
+            telegramCurrentSL := hit3 ? telegramTG2 : hit2 ? telegramTG1 : telegramSignalOpen
+            telegramTrailingActive := true
+            alert(telegramTargetPayload(telegramIsCE, telegramEntry, telegramCurrentSL, telegramTG1, telegramTG2, telegramTG3, hit1, hit2, hit3), alert.freq_all)
+            telegramTG1Hit := telegramTG1Hit or hit1
+            telegramTG2Hit := telegramTG2Hit or hit2
+            telegramTG3Hit := telegramTG3Hit or hit3
+
+    // A newly revised stop applies immediately, including on this update.
+    if telegramActive and telegramTrailingActive and (telegramIsCE ? close <= telegramCurrentSL : close >= telegramCurrentSL)
+        alert(telegramTrailingExitPayload(telegramIsCE, telegramEntry, close, telegramCurrentSL, telegramExitStats(telegramIsCE, telegramEntry, close, telegramTG1, telegramTG2, telegramTG3, telegramTG1Hit, telegramTG2Hit, telegramTG3Hit)), alert.freq_all)
+        telegramActive := false
+
+    bool telegramEntrySignal = telegramIsCE ? startLongTrade : startShortTrade
+    if telegramEntrySignal and (na(telegramLastEntryBar) or telegramLastEntryBar != bar_index)
+        telegramLastEntryBar := bar_index
+        telegramSignalBar := bar_index
+        telegramEntry := close
+        telegramEntrySL := telegramIsCE ? low[1] : high[1]
+        telegramSignalOpen := open
+        telegramCurrentSL := telegramEntrySL
+        telegramTrailingActive := false
+        float riskPoints = telegramIsCE ? telegramEntry - telegramEntrySL : telegramEntrySL - telegramEntry
+        bool validRisk = not na(riskPoints) and riskPoints > 0
+        float direction = telegramIsCE ? 1.0 : -1.0
+        telegramTG1 := validRisk ? math.round_to_mintick(telegramEntry + direction * riskPoints) : na
+        telegramTG2 := validRisk ? math.round_to_mintick(telegramEntry + direction * riskPoints * 2) : na
+        telegramTG3 := validRisk ? math.round_to_mintick(telegramEntry + direction * riskPoints * 3) : na
+        telegramTG1Hit := false
+        telegramTG2Hit := false
+        telegramTG3Hit := false
+        telegramSignalLow := low
+        telegramSignalHigh := high
+        telegramActive := true
+        alert(telegramEntryPayload(telegramIsCE, telegramEntry, telegramEntrySL, telegramTG1, telegramTG2, telegramTG3), alert.freq_all)
+
+// Structure streams retain the same event conditions and one notice per bar.
+varip int telegramLastStructureBar = na
+bool telegramStructureEvent = switch telegramStream
+    "CHoCH" => chochBull or chochBear
+    "BOS" => bullishBOS or bearishBOS
+    "EQH" => eqhAlertEvent
+    "EQL" => eqlAlertEvent
+    => false
+if barstate.isrealtime and telegramChatId() != "" and telegramStructureEvent and (na(telegramLastStructureBar) or telegramLastStructureBar != bar_index)
+    string structureText = "🔔 STRUCTURE Alert\n\nSignal: " + telegramStream + "\nTF: " + telegramTF()
+    structureText += "\n\nPrice: " + telegramPrice(close)
+    alert(telegramWrap(structureText + telegramTime()), alert.freq_all)
+    telegramLastStructureBar := bar_index
+
+// Dedicated 1-minute Daily Summary streams use exchange-session boundaries.
+var float telegramSessionOpen = na
+var int telegramSessionStart = na
+varip int telegramLastSummarySession = na
+if session.isfirstbar_regular
+    telegramSessionOpen := open
+    telegramSessionStart := time
+
+if telegramStream == "Daily Summary" and timeframe.isminutes and timeframe.multiplier == 1 and barstate.isrealtime and barstate.isconfirmed and session.islastbar_regular and telegramChatId() != "" and not na(telegramSessionOpen) and (na(telegramLastSummarySession) or telegramLastSummarySession != telegramSessionStart)
+    float movedPoints = close - telegramSessionOpen
+    float movedPercent = telegramSessionOpen != 0 ? movedPoints / telegramSessionOpen * 100 : na
+    string pointsSign = movedPoints > 0 ? "+" : ""
+    string percentSign = movedPercent > 0 ? "+" : ""
+    string summaryText = "📊 END-OF-DAY SUMMARY\n\nDate: " + str.format_time(time_close, "dd-MM-yyyy", "Asia/Kolkata")
+    summaryText += "\n\nMarket Open: " + telegramPrice(telegramSessionOpen)
+    summaryText += "\nMarket Close: " + telegramPrice(close)
+    summaryText += "\nMoved: " + pointsSign + telegramPrice(movedPoints) + " points (" + percentSign + str.tostring(movedPercent, "0.00") + "%)"
+    alert(telegramWrap(summaryText + telegramTime()), alert.freq_once_per_bar_close)
+    telegramLastSummarySession := telegramSessionStart
